@@ -11,6 +11,9 @@ export const FighterSchema = z.object({
   imageUrl: z.string().url(),
   description: z.string().max(500),
   createdBy: z.string(),
+  // Fighters created before the community pool have no timestamp — default 0
+  // sorts them oldest rather than dropping them on read.
+  createdAt: z.number().default(0),
 });
 export type Fighter = z.infer<typeof FighterSchema>;
 

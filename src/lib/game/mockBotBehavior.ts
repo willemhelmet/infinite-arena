@@ -39,6 +39,7 @@ export const SEED_BOTS: BotSpec[] = [
       imageUrl: "https://placehold.co/512x512/3f3f46/e4e4e7/png?text=KARG",
       description: "A salvage titan who welded his own heart to a reactor core.",
       createdBy: "bot",
+      createdAt: 0,
     },
   },
   {
@@ -49,6 +50,7 @@ export const SEED_BOTS: BotSpec[] = [
       imageUrl: "https://placehold.co/512x512/1e1b4b/c7d2fe/png?text=VESPER",
       description: "A holographic duelist who fights one second in the future.",
       createdBy: "bot",
+      createdAt: 0,
     },
   },
   {
@@ -59,6 +61,7 @@ export const SEED_BOTS: BotSpec[] = [
       imageUrl: "https://placehold.co/512x512/134e4a/99f6e4/png?text=BRINE",
       description: "It crawled out of the harbor and demands a referee.",
       createdBy: "bot",
+      createdAt: 0,
     },
   },
 ];
@@ -72,6 +75,7 @@ export const CORRIDOR_BOT: BotSpec = {
     imageUrl: "https://placehold.co/512x512/7f1d1d/fecaca/png?text=YOU?",
     description: "A wandering duelist who smelled fresh arena paint.",
     createdBy: "bot",
+    createdAt: 0,
   },
 };
 

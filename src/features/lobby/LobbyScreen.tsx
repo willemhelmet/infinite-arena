@@ -26,7 +26,7 @@ export function LobbyScreen({ roomId }: { roomId: string }) {
   function handleJoinWithFighter() {
     if (!pickedFighter) return;
     joinSentRef.current = true;
-    send({ type: "join_room", roomId, fighterId: pickedFighter.id });
+    send({ type: "join_room", roomId, fighter: pickedFighter });
   }
 
   // Navigate to the fight the instant the server fires it.

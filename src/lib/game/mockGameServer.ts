@@ -26,7 +26,6 @@ import type {
   RoomSummary,
   RoundPrompt,
 } from "@/lib/game/schemas";
-import { getFighter } from "@/lib/fighters/roster";
 import { getSelfPlayerId } from "@/lib/identity";
 
 // A fully client-side GameClient: rooms live in memory, a bot fills the other
@@ -128,7 +127,7 @@ export class MockGameServer implements GameClient {
   // Event handlers
 
   private handleCreateRoom(event: Extract<ClientEvent, { type: "create_room" }>) {
-    const fighter = getFighter(event.hostFighterId);
+    const fighter = event.fighter;
     if (!fighter) {
       queueMicrotask(() =>
         this.emit({ type: "server_error", message: "Pick a fighter first." }),
@@ -150,7 +149,7 @@ export class MockGameServer implements GameClient {
 
   private handleJoinRoom(event: Extract<ClientEvent, { type: "join_room" }>) {
     const runtime = this.rooms.get(event.roomId);
-    const fighter = getFighter(event.fighterId);
+    const fighter = event.fighter;
     if (!runtime) {
       queueMicrotask(() =>
         this.emit({ type: "server_error", message: "That arena is gone." }),

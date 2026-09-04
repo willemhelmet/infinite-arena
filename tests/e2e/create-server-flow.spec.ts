@@ -31,11 +31,22 @@ test("host flow runs entry to results", async ({ page }) => {
   // Play it out — attack whenever the input unlocks; a KO can end the fight
   // before round 5, so loop on "results reached", not a fixed count.
   for (let round = 1; round <= 6; round++) {
+    // Bail before touching the input if the fight already ended.
+    if (page.url().includes("/results")) break;
+    // Wait until the round indicator reaches THIS round — the input only stays
+    // reliably enabled once round_started for it has landed.
+    await page
+      .getByTestId("round-indicator")
+      .getByText(new RegExp(`Round ${round} /`))
+      .waitFor({ timeout: 15_000 })
+      .catch(() => {});
+    if (page.url().includes("/results")) break;
     const input = page.getByTestId("attack-input");
     await expect(input).toBeEnabled({ timeout: 15_000 });
     await input.fill(
       `Host round ${round}: a sweeping strike that cannot be matched by mortal means.`,
     );
+    if (page.url().includes("/results")) break;
     await page.getByTestId("attack-submit").click();
     await page.waitForFunction(
       (r) => {

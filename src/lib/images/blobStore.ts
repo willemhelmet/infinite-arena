@@ -2,14 +2,18 @@ import { put } from "@vercel/blob";
 
 // Hosts fighter images at a publicly reachable URL.
 //
-// Production path: @vercel/blob put() with public access + a random suffix —
-// durable, fetchable over https, and exactly what the H3 feed needs later
-// when it consumes fighter images as first frames / character refs.
-//
-// Local-dev path: with no BLOB_READ_WRITE_TOKEN, falls back to a data: URI.
-// That keeps Create Fighter fully usable offline (preview + roster) but is
-// NOT a real public URL — H3 can't fetch a data: URI. We warn loudly so the
-// fallback is never mistaken for the real thing.
+// Auth precedence (matching the blob SDK's runtime behavior):
+//   1. Vercel OIDC — VERCEL_OIDC_TOKEN + BLOB_STORE_ID (your protected store)
+//   2. Classic read/write token — BLOB_READ_WRITE_TOKEN
+//   3. Local fallback — data: URI, with a loud warning (H3 canNOT use it)
+
+const OIDC_TOKEN = process.env.VERCEL_OIDC_TOKEN;
+const STORE_ID = process.env.BLOB_STORE_ID;
+const RW_TOKEN = process.env.BLOB_READ_WRITE_TOKEN;
+
+function hasBlobWrite(): boolean {
+  return Boolean((OIDC_TOKEN && STORE_ID) || RW_TOKEN);
+}
 
 let warnedFallback = false;
 
@@ -18,13 +22,14 @@ export async function putPublicImage(
   contentType: string,
   pathPrefix: string,
 ): Promise<string> {
-  if (!process.env.BLOB_READ_WRITE_TOKEN) {
+  if (!hasBlobWrite()) {
     if (!warnedFallback) {
       warnedFallback = true;
       console.warn(
-        "[blobStore] BLOB_READ_WRITE_TOKEN unset — fighter images are being " +
-          "stored as data: URIs. These are NOT publicly reachable and won't " +
-          "work as H3 first frames. Attach a Vercel Blob store for production.",
+        "[blobStore] no OIDC (VERCEL_OIDC_TOKEN + BLOB_STORE_ID) or " +
+          "BLOB_READ_WRITE_TOKEN — fighter images are being stored as data: " +
+          "URIs. These are NOT publicly reachable and won't work as H3 first " +
+          "frames. Attach/connect a Blob store for production.",
       );
     }
     const base64 = Buffer.from(bytes).toString("base64");
@@ -39,6 +44,11 @@ export async function putPublicImage(
       access: "public",
       addRandomSuffix: true,
       contentType,
+      // When OIDC is available, pass the pair — the SDK prefers it over the
+      // static token and rotates automatically.
+      ...(OIDC_TOKEN && STORE_ID
+        ? { oidcToken: OIDC_TOKEN, storeId: STORE_ID }
+        : { token: RW_TOKEN }),
     },
   );
   return url;

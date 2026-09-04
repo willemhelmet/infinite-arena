@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArenaButton } from "@/components/ArenaButton";
 import { ArenaPanel } from "@/components/ArenaPanel";
-import { saveFighter } from "@/lib/fighters/roster";
+import { savePoolFighter } from "@/lib/fighters/pool";
 import { useSelfPlayerId } from "@/lib/identity";
 import { FighterPreviewCard } from "./FighterPreviewCard";
 import { GenerateImagePanel } from "./GenerateImagePanel";
@@ -22,20 +22,26 @@ export function CreateFighterForm() {
   const [mode, setMode] = useState<Mode>("generate");
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const canSave = name.trim().length > 0 && imageUrl !== null && !saving;
 
-  function handleSave() {
+  async function handleSave() {
     if (!canSave || !selfPlayerId) return;
     setSaving(true);
-    saveFighter({
-      name: name.trim(),
-      description: description.trim(),
-      imageUrl,
-      createdBy: selfPlayerId,
-    });
-    const returnTo = searchParams.get("returnTo");
-    router.push(returnTo && returnTo.startsWith("/") ? returnTo : "/");
+    try {
+      await savePoolFighter({
+        name: name.trim(),
+        description: description.trim(),
+        imageUrl,
+        createdBy: selfPlayerId,
+      });
+      const returnTo = searchParams.get("returnTo");
+      router.push(returnTo && returnTo.startsWith("/") ? returnTo : "/");
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : String(err));
+      setSaving(false);
+    }
   }
 
   return (
@@ -103,10 +109,11 @@ export function CreateFighterForm() {
         </ArenaPanel>
       )}
 
+      {saveError && <p className="text-xs text-red-400">{saveError}</p>}
       <ArenaButton
         fullWidth
         disabled={!canSave}
-        onClick={handleSave}
+        onClick={() => void handleSave()}
         testId="fighter-save-button"
       >
         {saving ? "Saving…" : "Save Fighter"}

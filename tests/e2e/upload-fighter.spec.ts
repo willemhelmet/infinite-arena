@@ -25,9 +25,15 @@ test("upload flow: file input → preview → save", async ({ page }) => {
   await page.getByTestId("fighter-save-button").click();
   await page.waitForURL("**/");
 
-  const roster = await page.evaluate(() =>
-    JSON.parse(window.localStorage.getItem("infinite-arena:roster") ?? "[]"),
-  );
-  expect(roster[0]?.name).toBe("Upload Warrior");
-  expect(roster[0]?.imageUrl).toBe(MOCK_IMAGE_URL);
+  // The pool now lives server-side — confirm the upload landed via the pool
+  // fetch roundtrip.
+  const poolFighters = await page.evaluate(async () => {
+    const res = await fetch("/api/pool", { cache: "no-store" });
+    const body = (await res.json()) as { fighters: { name: string; imageUrl: string }[] };
+    return body.fighters;
+  });
+  expect(poolFighters.some((f) => f.name === "Upload Warrior")).toBe(true);
+  expect(
+    poolFighters.find((f) => f.name === "Upload Warrior")?.imageUrl,
+  ).toBe(MOCK_IMAGE_URL);
 });

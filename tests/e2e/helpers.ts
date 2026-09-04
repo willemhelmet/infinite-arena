@@ -5,6 +5,41 @@ import type { Page } from "@playwright/test";
 export const MOCK_IMAGE_URL = "https://placehold.co/512x512/18181b/f4f4f5/png?text=TEST";
 
 export async function mockImageRoutes(page: Page) {
+  // Mock the community pool: in-memory store shared across page navigations,
+  // mirroring what /api/pool does against blob.
+  const pool: Record<string, unknown>[] = [];
+
+  await page.route("**/api/pool**", async (route) => {
+    const req = route.request();
+    if (req.method() === "GET") {
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ enabled: true, fighters: pool }),
+      });
+    }
+    if (req.method() === "POST") {
+      const body = (await req.postDataJSON()) as {
+        name?: string;
+        imageUrl?: string;
+        description?: string;
+        createdBy?: string;
+      };
+      const fighter = {
+        ...body,
+        id: crypto.randomUUID(),
+        createdAt: Date.now(),
+      };
+      pool.push(fighter);
+      return route.fulfill({
+        status: 201,
+        contentType: "application/json",
+        body: JSON.stringify(fighter),
+      });
+    }
+    return route.fulfill({ status: 405 });
+  });
+
   await page.route("**/api/fighters/generate-image**", (route) => {
     if (route.request().method() === "GET") {
       return route.fulfill({

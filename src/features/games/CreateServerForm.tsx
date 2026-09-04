@@ -36,7 +36,7 @@ export function CreateServerForm() {
       type: "create_room",
       name: name.trim() || `${fighter.name}'s Arena`,
       visibility,
-      hostFighterId: fighter.id,
+      fighter,
     });
   }
 

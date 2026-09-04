@@ -1,4 +1,5 @@
 import type {
+  Fighter,
   FightResult,
   FightRound,
   Room,
@@ -15,9 +16,9 @@ export type ClientEvent =
       type: "create_room";
       name: string;
       visibility: "public" | "private";
-      hostFighterId: string;
+      fighter: Fighter;
     }
-  | { type: "join_room"; roomId: string; fighterId: string }
+  | { type: "join_room"; roomId: string; fighter: Fighter }
   | { type: "set_ready"; roomId: string; ready: boolean }
   | { type: "leave_room"; roomId: string }
   | { type: "submit_prompt"; roomId: string; round: number; prompt: string }

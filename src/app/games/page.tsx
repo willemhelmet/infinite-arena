@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { ArenaShell } from "@/components/ArenaShell";
+import { BackButton } from "@/components/BackButton";
 import { GameList } from "@/features/games/GameList";
 import { useGame } from "@/lib/game/GameProvider";
 
@@ -13,6 +14,7 @@ export default function Page() {
 
   return (
     <ArenaShell title="JOIN A GAME">
+      <BackButton />
       <GameList />
     </ArenaShell>
   );

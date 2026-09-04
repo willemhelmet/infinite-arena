@@ -38,12 +38,24 @@ test("join flow runs entry to results", async ({ page }) => {
   // end early on a KO, so loop on "results URL reached" rather than a fixed
   // round count.
   for (let round = 1; round <= 6; round++) {
+    // Bail before touching the input if the fight already ended — once the
+    // verdict screen mounts, the attack input is gone for good.
+    if (page.url().includes("/results")) break;
+    // Wait until the round indicator reaches THIS round number — the current
+    // round's input only stays enabled once round_started has landed for it.
+    await page
+      .getByTestId("round-indicator")
+      .getByText(new RegExp(`Round ${round} /`))
+      .waitFor({ timeout: 15_000 })
+      .catch(() => {});
+    if (page.url().includes("/results")) break;
     const input = page.getByTestId("attack-input");
     await expect(input).toBeEnabled({ timeout: 15_000 });
     // Long attacks win rounds in the graybox resolver.
     await input.fill(
       `Round ${round}: I launch a devastating combination of strikes that overwhelms any defense completely.`,
     );
+    if (page.url().includes("/results")) break;
     await page.getByTestId("attack-submit").click();
     // Either the round's narration lands (R{round} tag on the ticker) or the
     // fight ended outright. waitForFunction evaluates inside the page, which

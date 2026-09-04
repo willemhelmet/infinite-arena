@@ -3,10 +3,11 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Fighter } from "@/lib/game/schemas";
-import { loadRoster } from "@/lib/fighters/roster";
+import { fetchPool } from "@/lib/fighters/pool";
 
-// A grid of the local roster for picking a fighter. Used by Create Server
-// (pick before hosting) and the lobby (pick before readying).
+// A grid of the community pool for picking a fighter. Used by Create Server
+// (pick before hosting) and the lobby (pick before readying). Fighters belong
+// to everybody — anyone on any device can pick any pool fighter.
 export function RosterPicker({
   selectedId,
   onPick,
@@ -20,7 +21,13 @@ export function RosterPicker({
   const [roster, setRoster] = useState<Fighter[]>([]);
 
   useEffect(() => {
-    setRoster(loadRoster());
+    let cancelled = false;
+    void fetchPool().then((fighters) => {
+      if (!cancelled) setRoster(fighters);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   return (
@@ -41,7 +48,7 @@ export function RosterPicker({
                   : "border-zinc-800 hover:border-zinc-600",
               ].join(" ")}
             >
-              {/* eslint-disable-next-line @next/next/no-img-element -- user content: data: URIs + arbitrary remote URLs */}
+              {/* eslint-disable-next-line @next/next/no-img-element -- community pool: arbitrary remote URLs */}
               <img
                 src={fighter.imageUrl}
                 alt={fighter.name}
@@ -70,7 +77,7 @@ export function RosterPicker({
       </div>
       {roster.length === 0 && (
         <p className="mt-2 text-center text-xs text-zinc-600">
-          No fighters yet — forge your first one.
+          No fighters yet — forge the pool's first one.
         </p>
       )}
     </div>

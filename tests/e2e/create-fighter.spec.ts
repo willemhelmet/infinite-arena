@@ -22,18 +22,9 @@ test("generate flow: mock forge → preview → save → roster persists", async
   await page.getByTestId("fighter-save-button").click();
   await page.waitForURL("**/");
 
-  // Roster persisted to localStorage with the mocked image URL.
-  const roster = await page.evaluate(() =>
-    JSON.parse(window.localStorage.getItem("infinite-arena:roster") ?? "[]"),
-  );
-  expect(roster).toHaveLength(1);
-  expect(roster[0].name).toBe("Test Titan");
-  expect(roster[0].imageUrl).toBe(MOCK_IMAGE_URL);
-
-  // And it survives reload (same origin).
+  // The community pool is what the lobby reads — verify via the network and
+  // the UI, not localStorage.
   await page.goto("/games/new");
   await expect(page.getByTestId("roster-picker")).toBeVisible();
-  await expect(
-    page.getByTestId(`roster-fighter-${roster[0].id}`),
-  ).toBeVisible();
+  await expect(page.getByTestId("roster-picker").getByText("Test Titan")).toBeVisible();
 });
