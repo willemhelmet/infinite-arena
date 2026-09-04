@@ -1,11 +1,12 @@
 import { expect, test } from "@playwright/test";
 
-test("entry screen shows title, four actions, and a working how-to-play modal", async ({
+test("entry screen shows title, five actions, and a working how-to-play modal", async ({
   page,
 }) => {
   await page.goto("/");
 
   await expect(page.getByTestId("game-title")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Watch the Arena" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Create Fighter" })).toBeVisible();
   await expect(page.getByRole("button", { name: "View Fighters" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Join Game" })).toBeVisible();

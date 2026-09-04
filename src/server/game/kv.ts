@@ -27,6 +27,10 @@ export interface KV {
   sadd(key: string, member: string, ttlSeconds?: number): Promise<void>;
   srem(key: string, member: string): Promise<void>;
   smembers(key: string): Promise<string[]>;
+  /** Atomically increments a counter (created at 0) and returns the new value. */
+  incr(key: string): Promise<number>;
+  /** Keeps only the last `keep` entries of a list. */
+  ltrimLast(key: string, keep: number): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,6 +78,12 @@ class UpstashKV implements KV {
   }
   async smembers(key: string) {
     return this.redis.smembers<string[]>(key);
+  }
+  async incr(key: string) {
+    return this.redis.incr(key);
+  }
+  async ltrimLast(key: string, keep: number) {
+    await this.redis.ltrim(key, -keep, -1);
   }
 }
 
@@ -151,6 +161,15 @@ class MemoryKV implements KV {
   }
   async smembers(key: string) {
     return [...(this.live(key, "set")?.value ?? [])];
+  }
+  async incr(key: string) {
+    const next = Number(this.live(key, "string")?.value ?? "0") + 1;
+    this.map.set(key, { kind: "string", value: String(next), expiresAt: expiry() });
+    return next;
+  }
+  async ltrimLast(key: string, keep: number) {
+    const e = this.live(key, "list");
+    if (e && e.value.length > keep) e.value.splice(0, e.value.length - keep);
   }
 }
 

@@ -26,6 +26,9 @@ export function EntryMenu() {
       </div>
 
       <div className="flex w-full max-w-xs flex-col gap-3">
+        <ArenaButton fullWidth onClick={() => router.push("/watch")}>
+          Watch the Arena
+        </ArenaButton>
         <ArenaButton fullWidth onClick={() => router.push("/fighters/new")}>
           Create Fighter
         </ArenaButton>

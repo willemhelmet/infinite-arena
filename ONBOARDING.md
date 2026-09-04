@@ -8,12 +8,18 @@ is a verdict. The end state is a live AI-generated video feed of the fight
 on Reactor's `fast-h3` model, with an LLM "narrative coordinator" turning
 each round into the next scene prompt.
 
-Today the repo is a **graybox**: two real players, on any two devices, can
-run the whole lobby → countdown → fight → results loop against a small
-server-authoritative game engine in Next.js API routes, backed by Upstash
-Redis in production. An LLM narrative coordinator judges each round and
-writes a storyboard of fast-h3 shots; the live video feed that will render
-those shots is still parked behind a marked seam.
+The product is **one always-on channel**: a Python broadcaster
+(`broadcaster/`) owns a fast-h3 session and streams it ourselves (HLS, no
+Twitch or YouTube). Between fights it airs fighter bios. Viewers on the
+`/watch` page type `!fight <fighter>` in the arena's own chat to line up,
+and `!attack <text>` each round when they're on; an LLM narrative
+coordinator judges each round and writes the fast-h3 shots that go on air.
+The web app (Next.js on Vercel) is the fighter forge, the registry, the
+chat, the show-state endpoint, the coordinator, and the player page.
+
+There is also the older room-based web game (`/games/*`): two browsers,
+rounds judged by the same coordinator, with a mock video panel. It still
+works and shares the engine; the channel is the direction.
 
 ## Heads up: two docs in this repo are stale
 
@@ -52,6 +58,8 @@ Environment variables (all optional right now, see `.env.example`):
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL` | `src/server/game/coordinator.ts` | Rounds are judged by the deterministic fallback (longer attack wins, templated shots). Any OpenAI-compatible endpoint works. |
 | `NEXT_PUBLIC_FAST_TIMERS=1` | `src/lib/game/rules.ts`                    | Countdown ticks and the client poll run at 1/5 speed. Set by the e2e config. |
 | `NEXT_PUBLIC_H3_LIVE=1` | `src/features/fight/FightScreen.tsx`           | Fight screen mounts the (parked) live feed instead of the mock panel. |
+| `BROADCASTER_SECRET`    | `src/server/broadcaster.ts`                    | Show publish, Arena chat posts, and coordinator endpoints are closed. Must equal the broadcaster's. |
+| `NEXT_PUBLIC_STREAM_URL`| `src/features/watch/StreamPlayer.tsx`          | `/watch` shows "no stream configured" instead of the player. Point at the broadcaster's `live.m3u8`. |
 
 ## Scripts
 
@@ -73,6 +81,7 @@ e2e suite is the only automated check besides `tsc`.
 | `/`                      | `src/app/page.tsx`                         | `features/entry/EntryMenu`        |
 | `/fighters/new`          | `src/app/fighters/new/page.tsx`            | `features/fighter/CreateFighterForm` |
 | `/fighters`              | `src/app/fighters/page.tsx`                | `features/roster/FighterGallery`  |
+| `/watch`                 | `src/app/watch/page.tsx`                   | `features/watch/WatchScreen`      |
 | `/games`                 | `src/app/games/page.tsx`                   | `features/games/GameList`         |
 | `/games/new`             | `src/app/games/new/page.tsx`               | `features/games/CreateServerForm` |
 | `/games/[roomId]/lobby`  | `src/app/games/[roomId]/lobby/page.tsx`    | `features/lobby/LobbyScreen`      |
@@ -84,6 +93,10 @@ e2e suite is the only automated check besides `tsc`.
 | `/api/fighters/generate-image` | GET capability, POST `{prompt}` → `{imageUrl}` | Replicate flux-schnell    |
 | `/api/fighters/upload-image`   | POST multipart `file` → `{imageUrl}`  | 4 MB max, png/jpeg/webp/gif       |
 | `/api/fighters/registry` | GET all, POST `Fighter`, DELETE `?id=`     | The shared fighter catalog in Redis; writes need `x-player-id` = `createdBy` |
+| `/api/chat`              | GET `?since=seq`, POST `{text, handle}`    | The arena chat; the broadcaster posts as Arena/Narrator with the secret |
+| `/api/show`              | GET, PUT (secret)                          | `ShowState` the broadcaster publishes; goes `offline` when stale |
+| `/api/coordinator/resolve` | POST (secret)                            | Judge one chat-fight round; same `resolveRound` as the web game |
+| `/api/coordinator/program` | POST (secret) `{kind: bio|card|verdict}` | Storyboards for the programming between rounds |
 
 Pages are thin server components that wrap a client screen in
 `ArenaShell`. All logic lives in `src/features/*` and `src/lib/*`.
@@ -188,6 +201,36 @@ Rules that follow from this design:
 5. Humans only. There are no bots: a room waits until a second player
    joins, and a host leaving (or anyone leaving mid-fight) closes it.
 
+## The channel: broadcaster + web
+
+```
+viewer's browser ── /watch ──┬── hls.js ──▶ broadcaster HLS (:8088/live.m3u8)
+                             ├── GET /api/show   ◀── PUT (secret) ──┐
+                             └── GET/POST /api/chat ◀── polls/posts ─┤
+                                                                     │
+                     broadcaster/ (Python, any box with ffmpeg) ─────┘
+                       show.py ──▶ /api/coordinator/{resolve,program} (secret)
+                       reactor_link.py ◀──▶ fast-h3 (REACTOR_API_KEY)
+                       pacer → overlay → sinks/hls.py (ffmpeg)
+```
+
+- `src/lib/show/schema.ts` is the contract between the two halves:
+  `ShowState`, `ChatMessage`, the chat command list. The Python side
+  mirrors it by hand in `show.py`'s `show_state()`.
+- `src/server/chat/store.ts` is the chat: a capped Redis list with a global
+  sequence; pollers ask for everything after their seq.
+- `src/server/show/store.ts` holds the latest `ShowState`; a state older
+  than 30 seconds reads as `offline`, so a dead broadcaster can't leave a
+  phantom fight on the page.
+- `src/server/broadcaster.ts` is the one auth check: the
+  `x-broadcaster-secret` header against `BROADCASTER_SECRET`.
+- The coordinator's `programShots` (bio, card, verdict) lives next to
+  `resolveRound` in `coordinator.ts`, same prompt rules, same fallback
+  pattern.
+- `broadcaster/README.md` covers the Python side: programs, gating, queue
+  policy, the HLS sink, running it. `broadcaster/tests/test_show.py` runs a
+  full idle → card → fight → verdict cycle against fakes.
+
 ## Things that live outside the protocol on purpose
 
 - **Player identity**: `src/lib/identity.ts`. A UUID in localStorage under
@@ -282,6 +325,9 @@ Specs in `tests/e2e/`:
 - `fighter-gallery.spec.ts`: a fighter forged in one context appears in
   another's View Fighters, can be imported into that roster, and its creator
   can retire it; plus the registry refuses writes for someone else's fighter.
+- `watch.spec.ts`: the chat API (viewer posts, Arena posts with the secret,
+  seq-based polling), show state publish/read and its 403s, a bio program
+  from the coordinator, and the `/watch` page sending a message.
 
 `tests/e2e/helpers.ts` mocks both image routes with `page.route` so no
 real Replicate or Blob calls happen. Use `mockImageRoutes` and
@@ -316,8 +362,10 @@ and all e2e tests pass with the executable-path wrapper.
 - Reconnect on the results screen: after a refresh mid-results the
   snapshot replays the verdict, but a refresh on the lobby URL of a room
   you're not in shows the join picker even when the room is full.
-- Implement `LiveH3Feed` per `skill/SKILL.md`'s queue and auth contract,
-  enqueueing each resolved round's `shots` chained in order.
+- Run the broadcaster against the real deployment and tune: round clock,
+  idle target, gate timeout, the overlay's layout on the actual canvas.
+- Retire or fold the room-based web game (`/games/*`) into the channel once
+  the chat game is the way people play.
 
 ## Git and workflow
 

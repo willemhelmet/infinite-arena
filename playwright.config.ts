@@ -44,6 +44,7 @@ export default defineConfig({
       timeout: 300_000,
       env: {
         NEXT_PUBLIC_FAST_TIMERS: "1",
+        BROADCASTER_SECRET: "test-broadcaster-secret",
         OPENAI_API_KEY: "test-key",
         OPENAI_BASE_URL: `http://localhost:${LLM_PORT}/v1`,
         OPENAI_MODEL: "mock",
