@@ -20,6 +20,19 @@ export const ROOM_TTL_SECONDS = 3 * 60 * 60;
 
 export const MIN_DAMAGE = 10;
 export const DAMAGE_SPREAD = 15;
+/** The most one fighter can lose in a single round, whoever is judging. */
+export const MAX_ROUND_DAMAGE = 40;
+
+// fast-h3's enqueue contract (see @reactor-models/fast-h3 README).
+export const H3_PROMPT_MAX_CHARS = 800;
+export const H3_SHOT_SECONDS_MIN = 5.167;
+export const H3_SHOT_SECONDS_MAX = 14.375;
+export const SHOTS_PER_ROUND_MIN = 2;
+export const SHOTS_PER_ROUND_MAX = 3;
+
+// If the coordinator hasn't answered by then (function died mid-call), the
+// next request to touch the room resolves the round with the fallback judge.
+export const RESOLVE_TIMEOUT_MS = 45_000;
 
 // Templated with both fighters' actions; {a} = the winning move, {b} = the
 // losing move, {winner} = the winning fighter's name. Player-agnostic on

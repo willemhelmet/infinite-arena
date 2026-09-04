@@ -17,6 +17,10 @@ export interface FightState {
   round: number;
   prompts: RoundPrompt[];
   history: FightRound[];
+  /** Set while the coordinator is judging this round; cleared on apply. */
+  resolvingSince: number | null;
+  /** The arena's established look, fixed by the judge in round 1. */
+  setting: string | null;
 }
 
 export interface RoomRecord {

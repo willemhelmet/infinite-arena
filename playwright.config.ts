@@ -17,6 +17,7 @@ import { defineConfig } from "@playwright/test";
 // other projects' dev servers, and reuseExistingServer must never mistake a
 // sibling app for ours.
 const PORT = 3210;
+const LLM_PORT = 3211;
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -26,13 +27,27 @@ export default defineConfig({
     baseURL: `http://localhost:${PORT}`,
     headless: true,
   },
-  webServer: {
-    command: `pnpm build && pnpm start --port ${PORT}`,
-    url: `http://localhost:${PORT}`,
-    reuseExistingServer: false,
-    timeout: 300_000,
-    env: {
-      NEXT_PUBLIC_FAST_TIMERS: "1",
+  webServer: [
+    {
+      // A deterministic OpenAI-compatible stand-in (tests/e2e/mock-llm.mjs)
+      // so the coordinator's LLM path runs in the suite without a key.
+      command: `node tests/e2e/mock-llm.mjs`,
+      url: `http://localhost:${LLM_PORT}/`,
+      reuseExistingServer: false,
+      timeout: 30_000,
+      env: { MOCK_LLM_PORT: String(LLM_PORT) },
     },
-  },
+    {
+      command: `pnpm build && pnpm start --port ${PORT}`,
+      url: `http://localhost:${PORT}`,
+      reuseExistingServer: false,
+      timeout: 300_000,
+      env: {
+        NEXT_PUBLIC_FAST_TIMERS: "1",
+        OPENAI_API_KEY: "test-key",
+        OPENAI_BASE_URL: `http://localhost:${LLM_PORT}/v1`,
+        OPENAI_MODEL: "mock",
+      },
+    },
+  ],
 });

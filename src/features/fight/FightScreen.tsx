@@ -10,6 +10,7 @@ import { H3Feed } from "./H3Feed";
 import { NarrationTicker } from "./NarrationTicker";
 import { PromptInput } from "./PromptInput";
 import { RoundIndicator } from "./RoundIndicator";
+import { Storyboard } from "./Storyboard";
 
 const H3_LIVE = process.env.NEXT_PUBLIC_H3_LIVE === "1";
 
@@ -30,6 +31,7 @@ export function FightScreen({ roomId }: { roomId: string }) {
     currentRound?.prompts.some((p) => p.playerId !== selfPlayerId) ?? false,
   );
   const resolving = selfSubmitted && !state.narrations.some((n) => n.round === currentRound?.round);
+  const lastResolved = state.roundHistory.at(-1) ?? null;
 
   // The fight is over — head to the verdict.
   useEffect(() => {
@@ -78,6 +80,11 @@ export function FightScreen({ roomId }: { roomId: string }) {
           The narrator calls it
         </h2>
         <NarrationTicker lines={state.narrations} />
+        {lastResolved && (
+          <div className="mt-3 border-t border-zinc-800 pt-3">
+            <Storyboard round={lastResolved.round} shots={lastResolved.shots ?? []} />
+          </div>
+        )}
       </ArenaPanel>
 
       <ArenaPanel>

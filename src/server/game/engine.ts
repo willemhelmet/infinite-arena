@@ -14,11 +14,16 @@ import type {
 import {
   COUNTDOWN_FROM,
   COUNTDOWN_TICK_MS,
-  DAMAGE_SPREAD,
   MAX_ROUNDS,
-  MIN_DAMAGE,
-  NARRATION_TEMPLATES,
+  RESOLVE_TIMEOUT_MS,
 } from "@/lib/game/rules";
+import {
+  fallbackResolve,
+  resolveRound as judgeRound,
+  type FighterInRound,
+  type ResolveInput,
+  type RoundResolution,
+} from "./coordinator";
 import {
   appendEvents,
   clearPlayerRoom,
@@ -41,6 +46,11 @@ import {
 // polling the log (see sync()). Time-driven transitions (the countdown) are
 // advanced lazily by whichever request touches the room next — both players
 // poll every second, so nothing waits long.
+//
+// Round resolution is the one slow step (the LLM coordinator can take many
+// seconds), so it runs OUTSIDE the room lock: the second attack marks the
+// round "resolving" and commits, the judge runs, then a fresh lock applies
+// the verdict if the round is still the one it judged. Polls flow meanwhile.
 
 // ---------------------------------------------------------------------------
 // Transaction helper: collects the events one request produces for a room.
@@ -89,8 +99,16 @@ export async function handleClientEvent(
     case "leave_room":
       await leaveRoom(playerId, event.roomId);
       return [];
-    case "submit_prompt":
-      return submitPrompt(playerId, event.roomId, event.round, event.prompt);
+    case "submit_prompt": {
+      const { reply, judge } = await submitPrompt(
+        playerId,
+        event.roomId,
+        event.round,
+        event.prompt,
+      );
+      if (judge) await resolvePendingRound(event.roomId, judge);
+      return reply;
+    }
     case "request_rematch":
       return requestRematch(playerId, event.roomId);
   }
@@ -270,14 +288,17 @@ async function submitPrompt(
   roomId: string,
   round: number,
   prompt: string,
-): Promise<ServerEvent[]> {
+): Promise<{ reply: ServerEvent[]; judge: ResolveInput | null }> {
   return withRoomLock(roomId, async () => {
     const record = await loadRoom(roomId);
-    if (!record) return [error("That arena is gone.")];
-    if (!slotOf(record, playerId)) return [error("You are not in this arena.")];
+    if (!record) return { reply: [error("That arena is gone.")], judge: null };
+    if (!slotOf(record, playerId))
+      return { reply: [error("You are not in this arena.")], judge: null };
     const fight = record.fight;
-    if (!fight || fight.round !== round) return []; // stale round, ignore
-    if (fight.prompts.some((p) => p.playerId === playerId)) return [];
+    if (!fight || fight.round !== round || fight.resolvingSince !== null)
+      return { reply: [], judge: null }; // stale round or already judging
+    if (fight.prompts.some((p) => p.playerId === playerId))
+      return { reply: [], judge: null };
 
     fight.prompts.push({
       playerId,
@@ -285,13 +306,31 @@ async function submitPrompt(
       submittedAt: Date.now(),
     });
     const tx = new RoomTx(record);
+    let judge: ResolveInput | null = null;
     if (fight.prompts.length >= 2) {
-      resolveRound(tx);
-    } else {
-      tx.emit({ type: "round_updated", roomId, round: currentRound(record) });
+      // Both moves are in. Freeze the round and hand it to the coordinator
+      // after the lock is released; the storyboard follows in a moment.
+      fight.resolvingSince = Date.now();
+      judge = resolveInputFor(record);
     }
+    tx.emit({ type: "round_updated", roomId, round: currentRound(record) });
     await tx.commit();
-    return [];
+    return { reply: [], judge };
+  });
+}
+
+/** Runs the judge outside the lock, then applies its verdict if still valid. */
+async function resolvePendingRound(roomId: string, input: ResolveInput) {
+  const resolution = await judgeRound(input);
+  await withRoomLock(roomId, async () => {
+    const record = await loadRoom(roomId);
+    const fight = record?.fight;
+    if (!record || !fight) return;
+    // Someone else (the timeout path) may have resolved it while we judged.
+    if (fight.round !== input.round || fight.resolvingSince === null) return;
+    const tx = new RoomTx(record);
+    applyResolution(tx, resolution);
+    await tx.commit();
   });
 }
 
@@ -323,6 +362,17 @@ async function requestRematch(
 /** Emits any countdown ticks that are due, and starts the fight at zero. */
 function advance(tx: RoomTx, now: number) {
   const record = tx.record;
+  const fight = record.fight;
+  if (
+    fight?.resolvingSince !== null &&
+    fight?.resolvingSince !== undefined &&
+    now - fight.resolvingSince > RESOLVE_TIMEOUT_MS
+  ) {
+    // The request that was judging this round never came back (function
+    // timeout, crash). Don't leave both players staring at a spinner.
+    console.warn(`[engine] round ${fight.round} in ${record.room.id} timed out judging; fallback`);
+    applyResolution(tx, fallbackResolve(resolveInputFor(record)));
+  }
   if (record.countdownStartedAt === null) return;
   const elapsed = now - record.countdownStartedAt;
   while (
@@ -342,60 +392,58 @@ function advance(tx: RoomTx, now: number) {
 function startFight(tx: RoomTx) {
   const record = tx.record;
   record.countdownStartedAt = null;
-  record.fight = { round: 1, prompts: [], history: [] };
+  record.fight = { round: 1, prompts: [], history: [], resolvingSince: null, setting: null };
   record.lastResult = null;
   tx.emit({ type: "fight_started", roomId: record.room.id });
   tx.emit({ type: "round_started", roomId: record.room.id, round: currentRound(record) });
   tx.pushRoom();
 }
 
-function resolveRound(tx: RoomTx) {
+function resolveInputFor(record: RoomRecord): ResolveInput {
+  const fight = record.fight!;
+  const [host, guest] = record.room.players;
+  const forSlot = (slot: PlayerSlot): FighterInRound => ({
+    playerId: slot.playerId,
+    fighter: slot.fighter!,
+    health: slot.health,
+    prompt: fight.prompts.find((p) => p.playerId === slot.playerId)!,
+  });
+  return {
+    arenaName: record.room.name,
+    round: fight.round,
+    fighters: [forSlot(host), forSlot(guest!)],
+    history: fight.history,
+    setting: fight.setting,
+  };
+}
+
+/** Writes the judge's verdict into the room: health, history, events, next round. */
+function applyResolution(tx: RoomTx, resolution: RoundResolution) {
   const record = tx.record;
   const fight = record.fight;
-  const [host, guest] = record.room.players;
-  if (!fight || fight.prompts.length < 2 || !guest) return;
+  if (!fight) return;
+  const roomId = record.room.id;
 
-  // Graybox resolver: the longer attack text wins (a cheeky proxy for
-  // commitment) and the loser drops MIN_DAMAGE..MIN_DAMAGE+DAMAGE_SPREAD.
-  // The LLM narrative coordinator replaces this function entirely.
-  const [promptA, promptB] = fight.prompts;
-  const winner = promptA.text.length >= promptB.text.length ? promptA : promptB;
-  const loser = winner === promptA ? promptB : promptA;
-  const damage = MIN_DAMAGE + Math.floor(Math.random() * DAMAGE_SPREAD);
-
-  const nameOf = (playerId: string) =>
-    record.room.players.find((p) => p?.playerId === playerId)?.fighter?.name ??
-    "The fighter";
-  const template =
-    NARRATION_TEMPLATES[Math.floor(Math.random() * NARRATION_TEMPLATES.length)];
-  const narration = template
-    .replace("{a}", winner.text)
-    .replace("{b}", loser.text)
-    .replace("{winner}", nameOf(winner.playerId));
-
-  const healthAfter: Record<string, number> = {
-    [host.playerId]: host.health,
-    [guest.playerId]: guest.health,
-  };
-  healthAfter[loser.playerId] = Math.max(0, healthAfter[loser.playerId] - damage);
+  const healthAfter: Record<string, number> = {};
+  for (const [i, slot] of record.room.players.entries()) {
+    if (!slot) continue;
+    const health = Math.max(0, slot.health - (resolution.damage[slot.playerId] ?? 0));
+    healthAfter[slot.playerId] = health;
+    record.room.players[i] = { ...slot, health };
+  }
 
   const resolved: FightRound = {
     round: fight.round,
     prompts: [...fight.prompts],
-    narration,
+    narration: resolution.narration,
     healthAfter,
+    shots: resolution.shots,
   };
   fight.history.push(resolved);
-  for (const [i, slot] of record.room.players.entries()) {
-    if (slot)
-      record.room.players[i] = {
-        ...slot,
-        health: healthAfter[slot.playerId] ?? slot.health,
-      };
-  }
+  fight.setting = resolution.setting ?? fight.setting;
+  fight.resolvingSince = null;
 
-  const roomId = record.room.id;
-  tx.emit({ type: "narration", roomId, round: resolved.round, text: narration });
+  tx.emit({ type: "narration", roomId, round: resolved.round, text: resolution.narration });
   tx.emit({ type: "round_resolved", roomId, round: resolved });
   tx.pushRoom();
 
@@ -403,7 +451,7 @@ function resolveRound(tx: RoomTx) {
   if (dead || fight.round >= MAX_ROUNDS) {
     endFight(tx);
   } else {
-    record.fight = { ...fight, round: fight.round + 1, prompts: [] };
+    record.fight = { ...fight, round: fight.round + 1, prompts: [], resolvingSince: null };
     tx.emit({ type: "round_started", roomId, round: currentRound(record) });
   }
 }

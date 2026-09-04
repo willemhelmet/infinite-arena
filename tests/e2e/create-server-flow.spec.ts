@@ -59,10 +59,14 @@ test("two players fight from the arena list to a shared verdict", async ({
   // The graybox resolver favors the longer attack, and one round's damage is
   // at most 24, so a host who always writes more can only KO in round 5.
   // That makes the fight exactly MAX_ROUNDS long — no race on early exits.
+  // Rounds are judged by the mock LLM (tests/e2e/mock-llm.mjs). Round 3's
+  // joiner attack carries GARBAGE, which makes the mock answer non-JSON so
+  // the coordinator's fallback judge has to step in — the fight must not
+  // stall, and the fallback also favors the longer attack.
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     await attack(
       guest,
-      `Joiner round ${round}: a quick jab.`,
+      round === 3 ? "Joiner round 3: GARBAGE jab." : `Joiner round ${round}: a quick jab.`,
     );
     await attack(
       host,
@@ -71,6 +75,17 @@ test("two players fight from the arena list to a shared verdict", async ({
     // Both see the narrator's call for this round.
     await waitForNarration(host, round);
     await waitForNarration(guest, round);
+
+    if (round === 1) {
+      // The LLM path judged it and produced a storyboard the fight screen
+      // shows: the mock's call on the ticker, its two shots under it.
+      await expect(host.getByTestId("narration-ticker")).toContainText("MOCK JUDGE");
+      await host.getByTestId("storyboard").locator("summary").click();
+      await expect(host.getByTestId("storyboard-shot")).toHaveCount(2);
+      await expect(host.getByTestId("storyboard-shot").first()).toContainText(
+        "Hard cut to a wide shot",
+      );
+    }
   }
 
   // Same verdict on both screens.
@@ -82,6 +97,10 @@ test("two players fight from the arena list to a shared verdict", async ({
   await expect(
     host.getByTestId("rounds-recap").getByText(`Round ${MAX_ROUNDS}`, { exact: true }),
   ).toBeVisible();
+  // Every round kept its storyboard, the fallback round included.
+  await expect(host.getByTestId("rounds-recap").getByTestId("storyboard")).toHaveCount(
+    MAX_ROUNDS,
+  );
 
   // Rematch resets the room and returns both players to the lobby.
   await host.getByTestId("rematch-button").click();

@@ -11,9 +11,9 @@ each round into the next scene prompt.
 Today the repo is a **graybox**: two real players, on any two devices, can
 run the whole lobby → countdown → fight → results loop against a small
 server-authoritative game engine in Next.js API routes, backed by Upstash
-Redis in production. The round resolver is a placeholder (longer attack
-wins), and the live video feed and the LLM coordinator are parked behind
-clearly marked seams. Read this doc to learn where those seams are.
+Redis in production. An LLM narrative coordinator judges each round and
+writes a storyboard of fast-h3 shots; the live video feed that will render
+those shots is still parked behind a marked seam.
 
 ## Heads up: two docs in this repo are stale
 
@@ -49,7 +49,7 @@ Environment variables (all optional right now, see `.env.example`):
 | `REACTOR_API_KEY`       | `src/app/api/reactor/token/route.ts`           | Token route 500s. Nothing calls it yet.      |
 | `REPLICATE_API_KEY`     | `src/app/api/fighters/generate-image/route.ts` | "Generate" portrait tab is disabled, upload still works. |
 | `BLOB_READ_WRITE_TOKEN` | `src/lib/images/blobStore.ts`                  | Images become `data:` URIs (fine locally, not fetchable by H3). |
-| `OPENAI_*`              | nothing yet                                    | Reserved for the narrative coordinator.      |
+| `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL` | `src/server/game/coordinator.ts` | Rounds are judged by the deterministic fallback (longer attack wins, templated shots). Any OpenAI-compatible endpoint works. |
 | `NEXT_PUBLIC_FAST_TIMERS=1` | `src/lib/game/rules.ts`                    | Countdown ticks and the client poll run at 1/5 speed. Set by the e2e config. |
 | `NEXT_PUBLIC_H3_LIVE=1` | `src/features/fight/FightScreen.tsx`           | Fight screen mounts the (parked) live feed instead of the mock panel. |
 
@@ -149,6 +149,23 @@ Server side, in `src/server/game/`:
   each have their own rooms, which is the exact bug this layer fixes.
 - `http.ts` is shared route plumbing: the `x-player-id` header check, the
   cursor schema, `no-store` JSON responses, and error mapping.
+- `coordinator.ts` is the narrative coordinator. Given both attacks, the
+  fighters, health, and the last rounds, it returns damage for each side,
+  a narration, the arena's fixed `setting`, and 2 to 3 fast-h3 shots. It
+  calls an OpenAI-compatible chat endpoint with a JSON response format and
+  validates the reply with Zod. On no key, a failed call, or malformed
+  output it uses `fallbackResolve`, so a fight never stalls on the LLM.
+  `SYSTEM_PROMPT` in this file is the only place the H3 prompting rules
+  live; edit them there.
+
+How a round resolves. The second `submit_prompt` marks the round
+`resolvingSince` and commits under the lock, then releases it. The judge
+runs with no lock held, so both players' polls keep flowing and show the
+"narrator weighs both moves" state. A fresh lock then applies the verdict
+if the round is still the one judged. If the judging request dies, the
+next request to touch the room after `RESOLVE_TIMEOUT_MS` applies the
+fallback judge from `advance()`. The events route sets `maxDuration = 60`
+for this.
 
 Rules that follow from this design:
 
@@ -199,8 +216,10 @@ them and do not wire them up piecemeal.
 - `src/lib/reactor/roundTag.ts`: the metadata tag `{roomId, round}` that
   will be written on every enqueued clip and read back off the echo.
 
-The LLM narrative coordinator plugs into `resolveRound` in
-`src/server/game/engine.ts`, which today favors the longer attack text.
+The shots to render come from each `round_resolved` event's `shots`
+array, already in the order to chain them. The live feed's job is one
+`enqueue` per shot with `continue_from_clip_id` threaded from the previous
+reply, and `metadata` from `roundTag.ts`.
 
 ## UI conventions
 
@@ -225,7 +244,11 @@ The LLM narrative coordinator plugs into `resolveRound` in
 `pnpm test:e2e` runs Playwright against a **production build** on port
 3210 with `NEXT_PUBLIC_FAST_TIMERS=1` baked in. No Redis is needed: the
 single `next start` process uses `MemoryKV`, so rooms are shared across
-every browser context a test opens. The config comment explains
+every browser context a test opens. The config also starts
+`tests/e2e/mock-llm.mjs` on port 3211, a deterministic OpenAI-compatible
+stand-in, and points the app at it, so the coordinator's real LLM path runs
+in the suite. An attack containing `GARBAGE` makes the mock reply with
+non-JSON, which exercises the fallback judge. The config comment explains
 why: dev-mode compiles under parallel workers made the suite flaky, and
 `NEXT_PUBLIC_*` values inline at build time so the flag has to be set for
 the build step too. Expect the first run to take a couple of minutes for
@@ -238,8 +261,9 @@ Specs in `tests/e2e/`:
   paths save to the roster in localStorage.
 - `create-server-flow.spec.ts`: two browser contexts. Host creates, the
   joiner sees the arena appear on the list and joins, both ready, five
-  rounds, the same verdict on both screens, rematch returns both to the
-  lobby.
+  rounds judged by the mock LLM (round 3 through the fallback), the
+  storyboard renders, the same verdict on both screens, rematch returns
+  both to the lobby.
 - `join-game-flow.spec.ts`: the arena list updates live as rooms open and
   close, and a private arena stays off the list but is joinable by link.
 - `generate-image-route.spec.ts`: route-level contract for the generate
@@ -271,13 +295,15 @@ and all e2e tests pass with the executable-path wrapper.
 - Fix `README.md` so it describes this repo instead of the starter.
 - Add a lint script (`next lint` or ESLint flat config). There is an
   `eslint-disable` comment in `RosterPicker.tsx` but no ESLint config.
-- Wire the OpenAI-compatible narrative coordinator into `resolveRound` in
-  the server engine when a key is present, keeping the length-based
-  resolver as the fallback.
+- Fold anything from Reactor's fast-h3 prompt guide that `SYSTEM_PROMPT`
+  in the coordinator doesn't already say. The sandbox that wrote it could
+  not reach docs.reactor.inc, so it was built from the package README and
+  `skill/SKILL.md`.
 - Reconnect on the results screen: after a refresh mid-results the
   snapshot replays the verdict, but a refresh on the lobby URL of a room
   you're not in shows the join picker even when the room is full.
-- Implement `LiveH3Feed` per `skill/SKILL.md`'s queue and auth contract.
+- Implement `LiveH3Feed` per `skill/SKILL.md`'s queue and auth contract,
+  enqueueing each resolved round's `shots` chained in order.
 
 ## Git and workflow
 

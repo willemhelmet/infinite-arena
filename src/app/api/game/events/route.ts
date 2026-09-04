@@ -11,6 +11,8 @@ import { CursorSchema, errorResponse, json, playerIdFrom } from "@/server/game/h
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// A second attack can trigger the LLM coordinator inside this request.
+export const maxDuration = 60;
 
 const BodySchema = z.object({ event: ClientEventSchema, cursor: CursorSchema });
 
