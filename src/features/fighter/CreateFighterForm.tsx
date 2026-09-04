@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArenaButton } from "@/components/ArenaButton";
 import { ArenaPanel } from "@/components/ArenaPanel";
+import { registerFighter } from "@/lib/fighters/api";
 import { saveFighter } from "@/lib/fighters/roster";
 import { useSelfPlayerId } from "@/lib/identity";
 import { FighterPreviewCard } from "./FighterPreviewCard";
@@ -25,15 +26,23 @@ export function CreateFighterForm() {
 
   const canSave = name.trim().length > 0 && imageUrl !== null && !saving;
 
-  function handleSave() {
+  async function handleSave() {
     if (!canSave || !selfPlayerId) return;
     setSaving(true);
-    saveFighter({
+    const fighter = saveFighter({
       name: name.trim(),
       description: description.trim(),
       imageUrl,
       createdBy: selfPlayerId,
     });
+    // Share it to the registry so it shows up on every device's fighter
+    // list. Best effort: the local roster is already saved, so a failure
+    // here must not block the flow (the gallery re-syncs later).
+    try {
+      await registerFighter(fighter);
+    } catch (err) {
+      console.warn("[fighters] could not share to the registry:", err);
+    }
     const returnTo = searchParams.get("returnTo");
     router.push(returnTo && returnTo.startsWith("/") ? returnTo : "/");
   }

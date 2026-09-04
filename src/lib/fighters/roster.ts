@@ -48,6 +48,14 @@ export function saveFighter(
   return full;
 }
 
+/** Adds a fighter from the shared registry to this browser's roster, keeping
+ *  its id so the same fighter isn't duplicated across devices. */
+export function importFighter(fighter: Fighter): void {
+  const current = read();
+  if (current.some((f) => f.id === fighter.id)) return;
+  write([...current, fighter]);
+}
+
 export function deleteFighter(id: string) {
   write(read().filter((f) => f.id !== id));
 }

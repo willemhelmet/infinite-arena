@@ -15,7 +15,8 @@ import { Redis } from "@upstash/redis";
 
 export interface KV {
   get(key: string): Promise<string | null>;
-  set(key: string, value: string, ttlSeconds: number): Promise<void>;
+  /** Omit ttlSeconds for a key that should never expire. */
+  set(key: string, value: string, ttlSeconds?: number): Promise<void>;
   /** SET NX PX — true if the key was absent and is now set. */
   setIfAbsent(key: string, value: string, ttlMs: number): Promise<boolean>;
   del(...keys: string[]): Promise<void>;
@@ -23,7 +24,7 @@ export interface KV {
   rpush(key: string, values: string[], ttlSeconds: number): Promise<number>;
   lrange(key: string, start: number, stop: number): Promise<string[]>;
   llen(key: string): Promise<number>;
-  sadd(key: string, member: string, ttlSeconds: number): Promise<void>;
+  sadd(key: string, member: string, ttlSeconds?: number): Promise<void>;
   srem(key: string, member: string): Promise<void>;
   smembers(key: string): Promise<string[]>;
 }
@@ -36,8 +37,9 @@ class UpstashKV implements KV {
   async get(key: string) {
     return (await this.redis.get<string>(key)) ?? null;
   }
-  async set(key: string, value: string, ttlSeconds: number) {
-    await this.redis.set(key, value, { ex: ttlSeconds });
+  async set(key: string, value: string, ttlSeconds?: number) {
+    if (ttlSeconds === undefined) await this.redis.set(key, value);
+    else await this.redis.set(key, value, { ex: ttlSeconds });
   }
   async setIfAbsent(key: string, value: string, ttlMs: number) {
     const res = await this.redis.set(key, value, { nx: true, px: ttlMs });
@@ -60,7 +62,11 @@ class UpstashKV implements KV {
   async llen(key: string) {
     return this.redis.llen(key);
   }
-  async sadd(key: string, member: string, ttlSeconds: number) {
+  async sadd(key: string, member: string, ttlSeconds?: number) {
+    if (ttlSeconds === undefined) {
+      await this.redis.sadd(key, member);
+      return;
+    }
     await this.redis.pipeline().sadd(key, member).expire(key, ttlSeconds).exec();
   }
   async srem(key: string, member: string) {
@@ -77,6 +83,9 @@ type Entry =
   | { kind: "string"; value: string; expiresAt: number }
   | { kind: "list"; value: string[]; expiresAt: number }
   | { kind: "set"; value: Set<string>; expiresAt: number };
+
+const expiry = (ttlSeconds?: number) =>
+  ttlSeconds === undefined ? Number.POSITIVE_INFINITY : Date.now() + ttlSeconds * 1000;
 
 class MemoryKV implements KV {
   private map = new Map<string, Entry>();
@@ -97,12 +106,8 @@ class MemoryKV implements KV {
   async get(key: string) {
     return this.live(key, "string")?.value ?? null;
   }
-  async set(key: string, value: string, ttlSeconds: number) {
-    this.map.set(key, {
-      kind: "string",
-      value,
-      expiresAt: Date.now() + ttlSeconds * 1000,
-    });
+  async set(key: string, value: string, ttlSeconds?: number) {
+    this.map.set(key, { kind: "string", value, expiresAt: expiry(ttlSeconds) });
   }
   async setIfAbsent(key: string, value: string, ttlMs: number) {
     if (this.live(key, "string")) return false;
@@ -131,14 +136,14 @@ class MemoryKV implements KV {
   async llen(key: string) {
     return this.live(key, "list")?.value.length ?? 0;
   }
-  async sadd(key: string, member: string, ttlSeconds: number) {
+  async sadd(key: string, member: string, ttlSeconds?: number) {
     const e = this.live(key, "set") ?? {
       kind: "set" as const,
       value: new Set<string>(),
       expiresAt: 0,
     };
     e.value.add(member);
-    e.expiresAt = Date.now() + ttlSeconds * 1000;
+    e.expiresAt = expiry(ttlSeconds);
     this.map.set(key, e);
   }
   async srem(key: string, member: string) {

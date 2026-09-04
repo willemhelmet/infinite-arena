@@ -72,6 +72,7 @@ e2e suite is the only automated check besides `tsc`.
 | ------------------------ | ------------------------------------------ | --------------------------------- |
 | `/`                      | `src/app/page.tsx`                         | `features/entry/EntryMenu`        |
 | `/fighters/new`          | `src/app/fighters/new/page.tsx`            | `features/fighter/CreateFighterForm` |
+| `/fighters`              | `src/app/fighters/page.tsx`                | `features/roster/FighterGallery`  |
 | `/games`                 | `src/app/games/page.tsx`                   | `features/games/GameList`         |
 | `/games/new`             | `src/app/games/new/page.tsx`               | `features/games/CreateServerForm` |
 | `/games/[roomId]/lobby`  | `src/app/games/[roomId]/lobby/page.tsx`    | `features/lobby/LobbyScreen`      |
@@ -82,6 +83,7 @@ e2e suite is the only automated check besides `tsc`.
 | `/api/reactor/token`     | GET, mints a scoped Reactor JWT            |                                   |
 | `/api/fighters/generate-image` | GET capability, POST `{prompt}` → `{imageUrl}` | Replicate flux-schnell    |
 | `/api/fighters/upload-image`   | POST multipart `file` → `{imageUrl}`  | 4 MB max, png/jpeg/webp/gif       |
+| `/api/fighters/registry` | GET all, POST `Fighter`, DELETE `?id=`     | The shared fighter catalog in Redis; writes need `x-player-id` = `createdBy` |
 
 Pages are thin server components that wrap a client screen in
 `ArenaShell`. All logic lives in `src/features/*` and `src/lib/*`.
@@ -193,8 +195,15 @@ Rules that follow from this design:
   header on every game request. There is no auth; whoever presents an id is
   that player. `getSelfPlayerId()` returns `""` during SSR; use
   `useSelfPlayerId()` in components.
-- **Fighter roster**: `src/lib/fighters/roster.ts`. Per-browser, stored in
-  localStorage under `infinite-arena:roster`, validated with Zod on read.
+- **Fighter roster and registry**: two layers. `src/lib/fighters/roster.ts`
+  is this browser's hand: per-browser, in localStorage under
+  `infinite-arena:roster`, validated with Zod on read, and what the roster
+  picker offers. `src/server/fighters/registry.ts` is the shared catalog in
+  Redis (never expires): saving a fighter publishes it there, the View
+  Fighters page lists everyone's, "Use this fighter" imports one into the
+  local roster keeping its id, and the gallery back-fills any local fighters
+  the registry doesn't know. Only the creator (by `x-player-id`) can register
+  or retire a fighter.
   This will become a REST resource, not a WS message, so it stays out of
   `GameClient`.
 - **Fighter images**: `src/lib/fighters/api.ts` wraps the two image routes.
@@ -270,6 +279,9 @@ Specs in `tests/e2e/`:
   close, and a private arena stays off the list but is joinable by link.
 - `generate-image-route.spec.ts`: route-level contract for the generate
   endpoint, works with or without a Replicate key.
+- `fighter-gallery.spec.ts`: a fighter forged in one context appears in
+  another's View Fighters, can be imported into that roster, and its creator
+  can retire it; plus the registry refuses writes for someone else's fighter.
 
 `tests/e2e/helpers.ts` mocks both image routes with `page.route` so no
 real Replicate or Blob calls happen. Use `mockImageRoutes` and

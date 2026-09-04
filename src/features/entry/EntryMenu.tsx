@@ -29,6 +29,9 @@ export function EntryMenu() {
         <ArenaButton fullWidth onClick={() => router.push("/fighters/new")}>
           Create Fighter
         </ArenaButton>
+        <ArenaButton fullWidth onClick={() => router.push("/fighters")}>
+          View Fighters
+        </ArenaButton>
         <ArenaButton fullWidth onClick={() => router.push("/games")}>
           Join Game
         </ArenaButton>
