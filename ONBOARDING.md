@@ -156,7 +156,9 @@ Server side, in `src/server/game/`:
   validates the reply with Zod. On no key, a failed call, or malformed
   output it uses `fallbackResolve`, so a fight never stalls on the LLM.
   `SYSTEM_PROMPT` in this file is the only place the H3 prompting rules
-  live; edit them there.
+  live: a condensation of Reactor's FastH3 prompt guide (no memory between
+  clips, 800-char cap, picture and sound co-equal, one camera instruction,
+  hard cuts on continuation, positive descriptions only). Edit them there.
 
 How a round resolves. The second `submit_prompt` marks the round
 `resolvingSince` and commits under the lock, then releases it. The judge
@@ -295,10 +297,10 @@ and all e2e tests pass with the executable-path wrapper.
 - Fix `README.md` so it describes this repo instead of the starter.
 - Add a lint script (`next lint` or ESLint flat config). There is an
   `eslint-disable` comment in `RosterPicker.tsx` but no ESLint config.
-- Fold anything from Reactor's fast-h3 prompt guide that `SYSTEM_PROMPT`
-  in the coordinator doesn't already say. The sandbox that wrote it could
-  not reach docs.reactor.inc, so it was built from the package README and
-  `skill/SKILL.md`.
+- Tune `SYSTEM_PROMPT` in the coordinator against real fights. The
+  `lintShotPrompt` warnings in the Vercel function logs point at shots
+  that break the FastH3 prompt guide (missing hard cut, no soundscape,
+  negations, cross-clip references).
 - Reconnect on the results screen: after a refresh mid-results the
   snapshot replays the verdict, but a refresh on the lobby URL of a room
   you're not in shows the join picker even when the room is full.

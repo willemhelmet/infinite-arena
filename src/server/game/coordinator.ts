@@ -23,9 +23,11 @@ import {
 // round so a fight never stalls on the LLM.
 //
 // The H3 prompting rules the storyboard must follow live in SYSTEM_PROMPT
-// below. They come from Reactor's fast-h3 prompt guide as carried in
-// skill/SKILL.md ("the hard-cut rule") plus the model's enqueue contract.
-// Edit them there and nowhere else.
+// below. They are a condensation of Reactor's FastH3 prompt guide
+// (docs.reactor.inc/model-api-reference/fast-h3/prompt-guide): no memory
+// between clips, 800-char cap, picture and sound co-equal, one camera
+// instruction, hard cuts on continuation, positive descriptions only. Edit
+// them there and nowhere else.
 
 export interface FighterInRound {
   playerId: string;
@@ -64,7 +66,7 @@ You reply with ONE JSON object and nothing else, matching exactly:
   "winner": "A" | "B" | "draw",
   "damage": { "A": <integer 0-${MAX_ROUND_DAMAGE}>, "B": <integer 0-${MAX_ROUND_DAMAGE}> },
   "narration": "<1-3 sentences, third person, present tense, uses both fighters' names>",
-  "setting": "<one sentence: the arena's fixed look — location, surfaces, light, weather, crowd. Reuse the given setting verbatim when one is provided>",
+  "setting": "<one sentence: the arena's fixed look — location, surfaces, light, palette, weather, crowd. Reuse the given setting verbatim when one is provided>",
   "shots": [ { "prompt": "<see rules>", "seconds": <number ${H3_SHOT_SECONDS_MIN}-${H3_SHOT_SECONDS_MAX}> }, ... ]  // ${SHOTS_PER_ROUND_MIN} to ${SHOTS_PER_ROUND_MAX} shots
 }
 
@@ -75,15 +77,20 @@ JUDGING
 - Keep it PG-13: stylized action, no gore, no slurs, no real people.
 - winner is the fighter who took less damage this round; "draw" when equal.
 
-STORYBOARD — RULES FOR fast-h3 VIDEO PROMPTS (load-bearing, do not soften)
-The shots are rendered by a video model that generates each shot forward from the LAST FRAME of the previous shot, across the whole fight. It reads only the current shot's text. Prompts that lean on continuity ("the camera continues", "still on her face") make errors compound shot after shot until the picture smears and repeats. Therefore:
-1. EVERY shot is fully self-contained. Re-describe in every shot: the setting (verbatim from "setting"), both fighters' appearance (from their descriptions), the visual style and the lighting. Never assume the model remembers anything.
-2. EVERY shot opens on an explicit HARD CUT to a clearly different camera angle, distance or vantage, written as the first words: "Hard cut to a wide shot of…", "Hard cut to a low angle close on…", "Hard cut to an overhead view of…". This includes the first shot of a round, because it follows the previous round's last shot.
-3. Consecutive shots must be visually distinct and dynamic: change distance and angle every time; never two near-identical shots. Cover the round as beats: the approach/attacks, the clash or impact, the aftermath.
-4. Concrete, physical, present tense. Describe what is visibly happening in the frame: bodies, motion, contact, debris, light. No dialogue, no on-screen text, no sound description, no inner thoughts, no camera-movement instructions other than the opening cut.
-5. Each prompt is at most ${H3_PROMPT_MAX_CHARS} characters. Aim for 350-650. Each shot's seconds is between ${H3_SHOT_SECONDS_MIN} and ${H3_SHOT_SECONDS_MAX}; use 5-8 for quick beats and up to 10 for the impact.
-6. One consistent look for the whole fight: name the style in every shot (e.g. "cinematic live fight broadcast, gritty realism, shallow depth of field, hard rim lighting").
-7. Depict what the narration says happened. The storyboard is the narration made visible, not a different story.`;
+STORYBOARD — RULES FOR FastH3 VIDEO PROMPTS (from Reactor's FastH3 prompt guide; load-bearing, do not soften)
+FastH3 generates video AND audio in one pass, one clip per prompt. Every clip has no memory: it reads only its own prompt, and a clip that continues from the previous clip inherits only that clip's last FRAME, never its text. Your shots are chained in order across the whole fight.
+1. EVERY shot is fully self-contained. Re-establish the entire scene from scratch in every shot: both fighters and how they look (from their descriptions), the environment (the "setting", reused), the light, the palette, the style. Anything omitted vanishes or mutates.
+2. EVERY shot opens on a described HARD CUT to a clearly different camera angle, distance or vantage, as the first words: "Hard cut to a wide shot of…", "Hard cut to a low angle close on…", "Hard cut to an overhead view of…". This includes the first shot of a round, because it follows the previous round's last shot. A chain written as one continuous take degrades until the picture smears and repeats.
+3. Front-load the single most important beat in the first sentence. One beat per shot: a clip of 5-14 seconds has no room for a sequence. Cover the round as separate beats across the shots (the approach and attacks, the clash or impact, the aftermath), each visually distinct from the last.
+4. Exactly ONE camera instruction per shot, in plain words: one motion (static, slow push-in, handheld following, drone pullback), one framing (close-up, medium, wide), one angle (eye-level, low, overhead). Never write "cinematic", "dynamic", "dramatic" or other wishes about the output — translate them into what the camera literally does.
+5. SOUND IS CO-EQUAL WITH PICTURE. End every shot with what the microphone hears, 2-3 short clauses: ambience bed (crowd roar, wind, rain, arena hum), music (a mood and instrumentation, or "no music"), then action SFX (impacts, footfalls, metal, breath). Describe what sound IS, not what it looks like. A shot without sound comes back flat.
+6. Dialogue only if a fighter's attack includes words to be spoken (a taunt, a shout). Then quote it exactly, name who speaks with a stable tag and voice: S1 (Karg, gravel voice): "Is that all?". Never paraphrase speech.
+7. Positive descriptions only. Never write what should be absent ("no text", "no crowd" renders text and a crowd). Name the positive state instead ("bare concrete", "an empty stand"). Never ask for on-screen text, UI, or scene numbers.
+8. Never refer across clips: no "the same", "still", "again", "continues", "as before". Bring every fact back into the frame by describing it.
+9. Present tense, concrete and physical: what the camera sees and the microphone hears right now — bodies, motion, contact, debris, light, sound.
+10. Length: at most ${H3_PROMPT_MAX_CHARS} characters, the server refuses longer. Aim for 450-700. Order each prompt: hard cut + beat → subjects and setting → camera → sound → dialogue. Put expendable clauses (style, secondary light) late.
+11. One consistent look for the whole fight, stated concretely in every shot (e.g. "gritty realism, shallow depth of field, hard rim lighting, live-broadcast grain").
+12. Depict what the narration says happened. The storyboard is the narration made visible and audible, not a different story.`;
 
 const LlmOutputSchema = z.object({
   winner: z.enum(["A", "B", "draw"]),
@@ -222,6 +229,10 @@ export function parseResolution(
   const shots = out.shots
     .slice(0, SHOTS_PER_ROUND_MAX)
     .map((s) => ({ prompt: s.prompt.trim().slice(0, H3_PROMPT_MAX_CHARS), seconds: s.seconds }));
+  for (const [i, shot] of shots.entries()) {
+    const smell = lintShotPrompt(shot.prompt);
+    if (smell.length) console.warn(`[coordinator] shot ${i + 1} smells: ${smell.join(", ")}`);
+  }
 
   return {
     winnerPlayerId,
@@ -233,13 +244,32 @@ export function parseResolution(
   };
 }
 
+// Soft checks against the prompt guide's anti-patterns. Warnings only — for
+// tuning the system prompt from the logs, never for rejecting a round.
+const SMELLS: [RegExp, string][] = [
+  [/^(?!hard cut)/i, "does not open on a hard cut"],
+  [/\b(cinematic|dynamic|dramatic)\b/i, "wish-word instead of camera"],
+  [/\bno\s+\w+/i, "negative space"],
+  [/\b(the same|still|again|continues?|as before)\b/i, "cross-clip reference"],
+  [/\[(shot|english|chinese)/i, "vendor-format scaffolding"],
+];
+
+export function lintShotPrompt(prompt: string): string[] {
+  const out = SMELLS.filter(([re]) => re.test(prompt)).map(([, label]) => label);
+  if (!/(roar|hum|wind|rain|crowd|music|sfx|thud|crack|clang|breath|footsteps?|echo|silence|hiss|rumble|scrape|impact)/i.test(prompt)) {
+    out.push("no soundscape");
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Fallback judge: no LLM, no network. The longer attack wins (a cheeky proxy
 // for commitment), the loser takes MIN_DAMAGE..MIN_DAMAGE+DAMAGE_SPREAD, and
-// the storyboard is templated but still obeys the hard-cut rules.
+// the storyboard is templated but still follows the prompt guide: hard cut,
+// full re-description, one camera instruction, a soundscape.
 
 const FALLBACK_STYLE =
-  "cinematic live fight broadcast, gritty realism, shallow depth of field, hard rim lighting, dust hanging in the air";
+  "gritty realism, shallow depth of field, hard rim lighting, live-broadcast grain";
 
 export function fallbackResolve(input: ResolveInput): RoundResolution {
   const [a, b] = input.fighters;
@@ -266,13 +296,13 @@ export function fallbackResolve(input: ResolveInput): RoundResolution {
   const shots: Shot[] = [
     {
       prompt: clip(
-        `Hard cut to a wide shot of ${setting}. ${who(a)} and ${who(b)} circle each other at the center. ${a.fighter.name}: ${a.prompt.text} ${b.fighter.name}: ${b.prompt.text} ${FALLBACK_STYLE}.`,
+        `Hard cut to a wide shot: ${who(a)} and ${who(b)} close on each other at the center of ${setting}. ${a.fighter.name}: ${a.prompt.text} ${b.fighter.name}: ${b.prompt.text} Static wide shot, eye-level. ${FALLBACK_STYLE}. Crowd roar swelling, a low drum pulse, boots scraping stone and hard breathing.`,
       ),
       seconds: 6,
     },
     {
       prompt: clip(
-        `Hard cut to a low angle close on the impact in ${setting}. ${who(winner)} lands the move — ${winner.prompt.text} — and ${who(loser)} takes it hard, staggering back, boots skidding through dust. ${FALLBACK_STYLE}.`,
+        `Hard cut to a low angle close-up on the impact: ${who(winner)} lands the move — ${winner.prompt.text} — and ${who(loser)} takes it hard, staggering back through dust in ${setting}. Handheld close-up, low angle. ${FALLBACK_STYLE}. A heavy thud and a crack, the crowd's roar breaking into a gasp, no music, dust hissing across the floor.`,
       ),
       seconds: 7,
     },
