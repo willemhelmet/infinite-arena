@@ -8,9 +8,11 @@ is a verdict. The end state is a live AI-generated video feed of the fight
 on Reactor's `fast-h3` model, with an LLM "narrative coordinator" turning
 each round into the next scene prompt.
 
-Today the repo is a **graybox**: the whole lobby → countdown → fight →
-results loop works end to end against an in-memory mock server with a bot
-opponent. The live video feed and the LLM coordinator are parked behind
+Today the repo is a **graybox**: two real players, on any two devices, can
+run the whole lobby → countdown → fight → results loop against a small
+server-authoritative game engine in Next.js API routes, backed by Upstash
+Redis in production. The round resolver is a placeholder (longer attack
+wins), and the live video feed and the LLM coordinator are parked behind
 clearly marked seams. Read this doc to learn where those seams are.
 
 ## Heads up: two docs in this repo are stale
@@ -43,11 +45,12 @@ Environment variables (all optional right now, see `.env.example`):
 
 | Variable                | Used by                                        | Without it                                   |
 | ----------------------- | ---------------------------------------------- | -------------------------------------------- |
+| `UPSTASH_REDIS_REST_URL` + `_TOKEN` | `src/server/game/kv.ts`            | Locally: rooms live in the dev server's memory. On Vercel: every game API call 500s, on purpose. `KV_REST_API_URL`/`_TOKEN` also accepted. |
 | `REACTOR_API_KEY`       | `src/app/api/reactor/token/route.ts`           | Token route 500s. Nothing calls it yet.      |
 | `REPLICATE_API_KEY`     | `src/app/api/fighters/generate-image/route.ts` | "Generate" portrait tab is disabled, upload still works. |
 | `BLOB_READ_WRITE_TOKEN` | `src/lib/images/blobStore.ts`                  | Images become `data:` URIs (fine locally, not fetchable by H3). |
 | `OPENAI_*`              | nothing yet                                    | Reserved for the narrative coordinator.      |
-| `NEXT_PUBLIC_MOCK_FAST=1` | `src/lib/game/mockBotBehavior.ts`            | Bot/countdown timers run at 1/10 speed. Set by the e2e config. |
+| `NEXT_PUBLIC_FAST_TIMERS=1` | `src/lib/game/rules.ts`                    | Countdown ticks and the client poll run at 1/5 speed. Set by the e2e config. |
 | `NEXT_PUBLIC_H3_LIVE=1` | `src/features/fight/FightScreen.tsx`           | Fight screen mounts the (parked) live feed instead of the mock panel. |
 
 ## Scripts
@@ -74,6 +77,8 @@ e2e suite is the only automated check besides `tsc`.
 | `/games/[roomId]/lobby`  | `src/app/games/[roomId]/lobby/page.tsx`    | `features/lobby/LobbyScreen`      |
 | `/games/[roomId]/fight`  | `src/app/games/[roomId]/fight/page.tsx`    | `features/fight/FightScreen`      |
 | `/games/[roomId]/results`| `src/app/games/[roomId]/results/page.tsx`  | `features/results/ResultsScreen`  |
+| `/api/game/events`       | POST `{event, cursor}` → `SyncResponse`    | Applies one `ClientEvent`, returns what the client missed |
+| `/api/game/poll`         | GET `?roomId=&seq=` → `SyncResponse`       | Polled every second by the client |
 | `/api/reactor/token`     | GET, mints a scoped Reactor JWT            |                                   |
 | `/api/fighters/generate-image` | GET capability, POST `{prompt}` → `{imageUrl}` | Replicate flux-schnell    |
 | `/api/fighters/upload-image`   | POST multipart `file` → `{imageUrl}`  | 4 MB max, png/jpeg/webp/gif       |
@@ -81,60 +86,94 @@ e2e suite is the only automated check besides `tsc`.
 Pages are thin server components that wrap a client screen in
 `ArenaShell`. All logic lives in `src/features/*` and `src/lib/*`.
 
-## Architecture: the game client seam
+## Architecture: client seam, HTTP transport, server engine
 
 This is the most important thing to understand. Every screen talks to the
-game through one interface and one React context, and nothing else.
+game through one interface and one React context. The transport is HTTP
+polling, and the server owns all game state.
 
 ```
-screens (features/*)  ──useGame()──▶  GameProvider  ──▶  GameClient
-                                          │                  │
-                                    gameReducer         MockGameServer (today)
-                                    TypedGameState      WsGameClient   (later)
+screens (features/*) ─useGame()─▶ GameProvider ─▶ GameClient (HttpGameClient)
+                                      │                 │ POST /api/game/events
+                                 gameReducer            │ GET  /api/game/poll (1s)
+                                 TypedGameState         ▼
+                                                 server/game/engine.ts
+                                                        │ per-room lock
+                                                 server/game/store.ts
+                                                        │
+                                                 server/game/kv.ts ─▶ Upstash Redis
+                                                                     (MemoryKV locally)
 ```
 
-- `src/lib/game/gameClient.ts` is the `GameClient` interface: `connect`,
-  `disconnect`, `send(ClientEvent)`, `subscribe(listener)`.
-- `src/lib/game/protocol.ts` defines `ClientEvent` and `ServerEvent`
-  unions. They are shaped like a real WebSocket protocol on purpose.
-- `src/lib/game/schemas.ts` holds the Zod schemas and inferred types for
-  `Fighter`, `Room`, `PlayerSlot`, `FightRound`, `FightResult`. These are
-  the shared vocabulary; a real server must speak these exact shapes.
-- `src/lib/game/state.ts` is the reducer. Every `ServerEvent` folds into
-  one `TypedGameState` with a coarse `phase` (`menu`, `lobby`, `countdown`,
-  `fight`, `results`, ...). Screens gate on `phase` and navigate with
-  `useEffect` when it changes.
-- `src/lib/game/GameProvider.tsx` creates the client once, subscribes,
-  reduces events, and exposes `{ state, send, dispatchUi, selfPlayerId }`
-  via `useGame()`. It queues `send` calls made before `connect()` resolves
-  and keeps `send` referentially stable. Do not add a `send` dependency
-  loop; the comment in the file explains the infinite-loop trap.
-- `src/lib/game/createGameClient.ts` is the **one line to change** when a
-  real backend arrives. Today it returns `new MockGameServer()`.
-- `src/lib/game/mockGameServer.ts` is the fully client-side server: seeded
-  public rooms hosted by bots, a "corridor bot" that joins rooms you host,
-  a bot that readies after you, a 3-second countdown, and a round resolver
-  that favors the longer attack text and knocks off 10 to 24 health.
-- `src/lib/game/mockBotBehavior.ts` holds every timer constant, the seeded
-  bots, and the canned bot prompts and narration templates.
+Client side, in `src/lib/game/`:
+
+- `gameClient.ts` is the `GameClient` interface: `connect`, `disconnect`,
+  `send(ClientEvent)`, `subscribe(listener)`.
+- `protocol.ts` defines the wire vocabulary. `ClientEventSchema` is a Zod
+  discriminated union and the type is inferred from it, so the server
+  validates exactly what the client type allows. `ServerEvent` is the
+  broadcast side. `SyncResponse` and `EventCursor` describe the polling
+  contract.
+- `schemas.ts` holds the Zod schemas for `Fighter`, `Room`, `PlayerSlot`,
+  `FightRound`, `FightResult`. Shared vocabulary for both sides.
+- `state.ts` is the reducer. Every `ServerEvent` folds into one
+  `TypedGameState` with a coarse `phase`. Screens gate on `phase` and
+  navigate with `useEffect` when it changes.
+- `GameProvider.tsx` creates the client once, subscribes, reduces events,
+  and exposes `{ state, send, dispatchUi, selfPlayerId }` via `useGame()`.
+  It queues `send` calls made before `connect()` resolves and keeps `send`
+  referentially stable. Read the comment about the infinite-loop trap.
+- `httpGameClient.ts` is the transport. Commands POST to the events route.
+  A timer polls the room's event log every `POLL_INTERVAL_MS`. It tracks a
+  cursor `{roomId, seq}` and drops events a racing request already
+  delivered. When the server reports no room but the client had one, it
+  synthesizes `room_closed`.
+- `createGameClient.ts` is the one line that picks the transport.
+- `rules.ts` holds `MAX_ROUNDS`, countdown timing, poll interval, room TTL,
+  and the narration templates. Both sides import it.
+
+Server side, in `src/server/game/`:
+
+- `engine.ts` is the authoritative game logic. Every handler loads the room
+  under a lock, mutates it, appends `ServerEvent`s to the room's log, and
+  saves. `sync()` returns either a delta after the client's cursor or, for a
+  client that isn't following this room yet, a snapshot that rebuilds the
+  current phase (room state, countdown, fight history, verdict). The
+  countdown is advanced lazily by whatever request touches the room next.
+- `store.ts` is persistence: room record, append-only event log, the
+  public-rooms set, the player → room index, and `withRoomLock`. Everything
+  carries `ROOM_TTL_SECONDS` so abandoned arenas expire.
+- `kv.ts` is the key-value layer. `UpstashKV` uses `@upstash/redis` over
+  REST. `MemoryKV` is a process-local map. The factory refuses to fall back
+  to memory when `VERCEL` is set, because separate function instances would
+  each have their own rooms, which is the exact bug this layer fixes.
+- `http.ts` is shared route plumbing: the `x-player-id` header check, the
+  cursor schema, `no-store` JSON responses, and error mapping.
 
 Rules that follow from this design:
 
 1. Screens never hold game state themselves. Read `state`, dispatch a
    `ClientEvent`, react to `phase`.
 2. New server behavior means a new `ServerEvent` in `protocol.ts`, a case
-   in `state.ts`, and a handler in `mockGameServer.ts`. Keep all three in
+   in `state.ts`, an emit in `engine.ts`, and usually a line in
+   `snapshot()` so a refreshing client can rebuild it. Keep all of them in
    step.
-3. Event ordering matters. The mock server pushes `room_state` **before**
+3. Event ordering matters. The engine pushes `room_state` **before**
    `fight_ended` because a `room_state` arriving on the results screen
    reads as a rematch signal and would cancel the results navigation. Read
    the `room_state` case in the reducer before touching either side.
+4. Every read-modify-write of a room goes through `withRoomLock`. Vercel
+   runs requests concurrently and both players act in the same second.
+5. Humans only. There are no bots: a room waits until a second player
+   joins, and a host leaving (or anyone leaving mid-fight) closes it.
 
 ## Things that live outside the protocol on purpose
 
 - **Player identity**: `src/lib/identity.ts`. A UUID in localStorage under
-  `infinite-arena:player-id`. `getSelfPlayerId()` returns `""` during SSR;
-  use `useSelfPlayerId()` in components.
+  `infinite-arena:player-id`, sent to the server as the `x-player-id`
+  header on every game request. There is no auth; whoever presents an id is
+  that player. `getSelfPlayerId()` returns `""` during SSR; use
+  `useSelfPlayerId()` in components.
 - **Fighter roster**: `src/lib/fighters/roster.ts`. Per-browser, stored in
   localStorage under `infinite-arena:roster`, validated with Zod on read.
   This will become a REST resource, not a WS message, so it stays out of
@@ -160,8 +199,8 @@ them and do not wire them up piecemeal.
 - `src/lib/reactor/roundTag.ts`: the metadata tag `{roomId, round}` that
   will be written on every enqueued clip and read back off the echo.
 
-The `previousClipId` field on the mock server's fight loop state is also
-reserved for chaining.
+The LLM narrative coordinator plugs into `resolveRound` in
+`src/server/game/engine.ts`, which today favors the longer attack text.
 
 ## UI conventions
 
@@ -184,7 +223,9 @@ reserved for chaining.
 ## Testing
 
 `pnpm test:e2e` runs Playwright against a **production build** on port
-3210 with `NEXT_PUBLIC_MOCK_FAST=1` baked in. The config comment explains
+3210 with `NEXT_PUBLIC_FAST_TIMERS=1` baked in. No Redis is needed: the
+single `next start` process uses `MemoryKV`, so rooms are shared across
+every browser context a test opens. The config comment explains
 why: dev-mode compiles under parallel workers made the suite flaky, and
 `NEXT_PUBLIC_*` values inline at build time so the flag has to be set for
 the build step too. Expect the first run to take a couple of minutes for
@@ -195,8 +236,12 @@ Specs in `tests/e2e/`:
 - `entry.spec.ts`: menu renders, how-to-play modal, nav buttons route.
 - `create-fighter.spec.ts` and `upload-fighter.spec.ts`: both portrait
   paths save to the roster in localStorage.
-- `create-server-flow.spec.ts`: host path, entry to results.
-- `join-game-flow.spec.ts`: joiner path, entry to results to rematch.
+- `create-server-flow.spec.ts`: two browser contexts. Host creates, the
+  joiner sees the arena appear on the list and joins, both ready, five
+  rounds, the same verdict on both screens, rematch returns both to the
+  lobby.
+- `join-game-flow.spec.ts`: the arena list updates live as rooms open and
+  close, and a private arena stays off the list but is joinable by link.
 - `generate-image-route.spec.ts`: route-level contract for the generate
   endpoint, works with or without a Replicate key.
 
@@ -204,12 +249,12 @@ Specs in `tests/e2e/`:
 real Replicate or Blob calls happen. Use `mockImageRoutes` and
 `createFighterViaUi` in any new flow spec.
 
-The fight-loop specs deliberately loop "until results URL or narration for
-round N appears" instead of asserting a fixed round count, because a KO can
-end the fight early and the mock's round resolver is random. Copy that
-pattern rather than asserting on specific narration text.
+The two-player fight spec makes the host's attack always longer than the
+joiner's. One round's damage is at most 24, so the joiner can only be
+knocked out in round 5, which makes the fight exactly `MAX_ROUNDS` long and
+removes any race on early exits. Keep that property if you touch it.
 
-Two things to know before trusting a red run:
+One thing to know before trusting a red run:
 
 - **Remote Claude Code sandbox**: the preinstalled Chromium at
   `/opt/pw-browsers/chromium` is a different build than the headless
@@ -218,25 +263,20 @@ Two things to know before trusting a red run:
   run with a wrapper config that spreads the repo config and adds
   `use.launchOptions.executablePath: "/opt/pw-browsers/chromium"` plus
   `webServer.cwd` pointing at the repo. With that, the suite runs.
-- **Known flake in the two fight-loop specs**: when no knockout happens,
-  the fight ends after round 5 and the loop still enters a sixth
-  iteration. It races the results navigation and fails on a detached
-  `attack-input`. Cap the loop at `MAX_ROUNDS` or wait for the results URL
-  after the fifth narration. On a fast machine the navigation usually
-  wins; in the remote sandbox it usually loses.
-
-Verified on a fresh clone in the remote sandbox: `pnpm typecheck` clean,
-6 of 8 e2e tests pass, the 2 failures are the flake above.
+Verified on a fresh clone in the remote sandbox: `pnpm typecheck` clean
+and all e2e tests pass with the executable-path wrapper.
 
 ## Suggested first tasks
 
 - Fix `README.md` so it describes this repo instead of the starter.
-- Fix the fight-loop e2e race described under Testing.
 - Add a lint script (`next lint` or ESLint flat config). There is an
   `eslint-disable` comment in `RosterPicker.tsx` but no ESLint config.
-- Wire the OpenAI-compatible narrative coordinator behind a new API route
-  and make the mock server call it in `resolveRound` when a key is
-  present, keeping the length-based resolver as the fallback.
+- Wire the OpenAI-compatible narrative coordinator into `resolveRound` in
+  the server engine when a key is present, keeping the length-based
+  resolver as the fallback.
+- Reconnect on the results screen: after a refresh mid-results the
+  snapshot replays the verdict, but a refresh on the lobby URL of a room
+  you're not in shows the join picker even when the room is full.
 - Implement `LiveH3Feed` per `skill/SKILL.md`'s queue and auth contract.
 
 ## Git and workflow

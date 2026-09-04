@@ -80,6 +80,16 @@ function reduceServerEvent(
   switch (event.type) {
     case "room_list":
       return { ...state, roomList: event.rooms };
+    case "room_closed":
+      // The arena we were in is gone (host left, or it expired). Back to the
+      // list, with the reason surfaced; screens navigate on the phase change.
+      return {
+        ...initialGameState,
+        connected: state.connected,
+        phase: "browsing_games",
+        roomList: state.roomList,
+        error: event.reason,
+      };
     case "room_state": {
       if (state.phase === "fight" || state.phase === "countdown") {
         // Mid-fight room updates (health application) shouldn't kick us out.
@@ -120,6 +130,8 @@ function reduceServerEvent(
       };
     case "round_started":
       return { ...state, currentRound: event.round, phase: "fight" };
+    case "round_updated":
+      return { ...state, currentRound: event.round };
     case "narration":
       return {
         ...state,

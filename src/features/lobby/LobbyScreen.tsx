@@ -22,11 +22,12 @@ export function LobbyScreen({ roomId }: { roomId: string }) {
   // Join flow: the room isn't open yet — pick a fighter first, then join.
   const isMember = room?.players.some((p) => p?.playerId === selfPlayerId);
   const needsJoin = !isMember && !joinSentRef.current;
+  if (isMember) joinSentRef.current = true; // seated, however we got here
 
   function handleJoinWithFighter() {
     if (!pickedFighter) return;
     joinSentRef.current = true;
-    send({ type: "join_room", roomId, fighterId: pickedFighter.id });
+    send({ type: "join_room", roomId, fighter: pickedFighter });
   }
 
   // Navigate to the fight the instant the server fires it.
@@ -35,6 +36,14 @@ export function LobbyScreen({ roomId }: { roomId: string }) {
       router.push(`/games/${roomId}/fight`);
     }
   }, [state.phase, room?.id, roomId, router]);
+
+  // The arena closed under us (host left, or it expired): back to the list,
+  // which shows the reason.
+  useEffect(() => {
+    if (state.phase === "browsing_games" && state.error && joinSentRef.current) {
+      router.push("/games");
+    }
+  }, [state.phase, state.error, router]);
 
   const [host, opponent] = room?.players ?? [null, null];
   const selfSlot =
@@ -103,7 +112,7 @@ export function LobbyScreen({ roomId }: { roomId: string }) {
                 <RosterPicker
                   selectedId={pickedFighter?.id ?? null}
                   onPick={() => {
-                    // Fighter reassignment mid-lobby isn't part of the mock
+                    // Fighter reassignment mid-lobby isn't part of the
                     // protocol; graybox keeps one pick per entry.
                   }}
                   createReturnTo={`/games/${roomId}/lobby`}

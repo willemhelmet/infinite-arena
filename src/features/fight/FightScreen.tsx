@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { ArenaPanel } from "@/components/ArenaPanel";
 import { HealthBar } from "@/components/HealthBar";
 import { useGame } from "@/lib/game/GameProvider";
-import { MAX_ROUNDS } from "@/lib/game/mockBotBehavior";
+import { MAX_ROUNDS } from "@/lib/game/rules";
 import { H3Feed } from "./H3Feed";
 import { NarrationTicker } from "./NarrationTicker";
 import { PromptInput } from "./PromptInput";
@@ -37,6 +37,11 @@ export function FightScreen({ roomId }: { roomId: string }) {
       router.push(`/games/${roomId}/results`);
     }
   }, [state.phase, room?.id, roomId, router]);
+
+  // The opponent walked out mid-fight and the arena closed.
+  useEffect(() => {
+    if (state.phase === "browsing_games" && state.error) router.push("/games");
+  }, [state.phase, state.error, router]);
 
   return (
     <div className="flex flex-col gap-4">

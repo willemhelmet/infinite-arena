@@ -1,80 +1,77 @@
 import { expect, test } from "@playwright/test";
 import { createFighterViaUi, mockImageRoutes } from "./helpers";
 
-// The full loop as a joiner: browse seeded arenas → join → pick fighter →
-// ready → bot readies → countdown → fight rounds → verdict → rematch/menu.
-test("join flow runs entry to results", async ({ page }) => {
-  test.setTimeout(120_000);
-  await mockImageRoutes(page);
-  await page.goto("/");
-  await createFighterViaUi(page, "Arena Joiner");
+// The arena list is live across devices: a room hosted in one browser shows
+// up in another's list without a refresh, and disappears when the host
+// leaves. (Two contexts stand in for a laptop and a phone.)
+test("arena list updates live as rooms open and close", async ({ browser }) => {
+  test.setTimeout(90_000);
+  const host = await (await browser.newContext()).newPage();
+  const watcher = await (await browser.newContext()).newPage();
+  await mockImageRoutes(host);
 
-  // Browse the seeded arenas.
-  await page.goto("/games");
-  await expect(page.getByTestId("game-list")).toBeVisible();
-  const joinButtons = page.getByRole("button", { name: "Join", exact: true });
-  // Seeded arenas arrive on the list_rooms roundtrip — wait for one to render.
-  await expect(joinButtons.first()).toBeVisible({ timeout: 15_000 });
-  await joinButtons.first().click();
-  await page.waitForURL(/\/games\/[^/]+\/lobby/);
+  await watcher.goto("/games");
+  await expect(watcher.getByTestId("game-list")).toBeVisible();
 
-  // Choose the same fighter to enter with.
-  await expect(page.getByTestId("roster-picker")).toBeVisible();
-  await page.getByTestId("roster-picker").getByText("Arena Joiner").click();
-  await page.getByTestId("join-with-fighter").click();
+  await host.goto("/");
+  await createFighterViaUi(host, "List Host");
+  const arenaName = `Watchtower ${Date.now().toString(36)}`;
+  await host.goto("/games/new");
+  await host.getByTestId("arena-name-input").fill(arenaName);
+  await host.getByTestId("roster-picker").getByText("List Host").click();
+  await host.getByTestId("create-server-button").click();
+  await host.waitForURL(/\/games\/[^/]+\/lobby/);
 
-  // In the lobby: our slot shows the fighter.
-  await expect(page.getByTestId("lobby-slots")).toBeVisible();
-  await expect(page.getByText("Arena Joiner")).toBeVisible();
+  // Appears on the other device's list, with the host's fighter and status.
+  const item = watcher
+    .getByTestId("game-list")
+    .locator("div", { has: watcher.getByText(arenaName, { exact: true }) })
+    .first();
+  await expect(item).toBeVisible({ timeout: 15_000 });
+  await expect(item).toContainText("List Host");
+  await expect(item).toContainText("Waiting for a challenger");
 
-  // Ready up — the bot follows, the fast countdown (300ms beats in test mode)
-  // flashes the 3-2-1 overlay, and the fight begins. The overlay is too quick
-  // to assert reliably; the fight transition is the load-bearing signal.
-  await page.getByTestId("ready-toggle").click();
-  await page.waitForURL(/\/fight/, { timeout: 15_000 });
-  await expect(page.getByTestId("mock-h3-feed")).toBeVisible();
+  // Host walks out; the room vanishes from the list.
+  await host.getByRole("button", { name: "Leave arena" }).click();
+  await host.waitForURL(/\/games$/);
+  await expect(watcher.getByText(arenaName, { exact: true })).toBeHidden({
+    timeout: 15_000,
+  });
+});
 
-  // Fight until the verdict: attack whenever the input unlocks. The fight can
-  // end early on a KO, so loop on "results URL reached" rather than a fixed
-  // round count.
-  for (let round = 1; round <= 6; round++) {
-    const input = page.getByTestId("attack-input");
-    await expect(input).toBeEnabled({ timeout: 15_000 });
-    // Long attacks win rounds in the graybox resolver.
-    await input.fill(
-      `Round ${round}: I launch a devastating combination of strikes that overwhelms any defense completely.`,
-    );
-    await page.getByTestId("attack-submit").click();
-    // Either the round's narration lands (R{round} tag on the ticker) or the
-    // fight ended outright. waitForFunction evaluates inside the page, which
-    // proved far more reliable here than locator polling across a fast-moving
-    // fight — with mock fast timers the whole fight can resolve in ~2s.
-    await page.waitForFunction(
-      (r) => {
-        return (
-          window.location.href.includes("/results") ||
-          (document
-            .querySelector('[data-testid="narration-ticker"]')
-            ?.textContent ?? ""
-          ).includes(`R${r}`)
-        );
-      },
-      round,
-      { timeout: 15_000 },
-    );
-    if (page.url().includes("/results")) break;
-  }
+test("a private arena stays off the list but is joinable by link", async ({
+  browser,
+}) => {
+  test.setTimeout(90_000);
+  const host = await (await browser.newContext()).newPage();
+  const guest = await (await browser.newContext()).newPage();
+  await mockImageRoutes(host);
+  await mockImageRoutes(guest);
 
-  // Verdict.
-  await page.waitForURL(/\/results/, { timeout: 30_000 });
-  await expect(page.getByTestId("winner-card")).toBeVisible();
-  await expect(page.getByTestId("rounds-recap")).toBeVisible();
-  await expect(
-    page.getByTestId("rounds-recap").getByText("Round 1", { exact: true }),
-  ).toBeVisible();
+  await host.goto("/");
+  await createFighterViaUi(host, "Secret Host");
+  await guest.goto("/");
+  await createFighterViaUi(guest, "Invited Guest");
 
-  // Rematch returns us to the lobby of the same arena.
-  await page.getByTestId("rematch-button").click();
-  await page.waitForURL(/\/lobby/, { timeout: 10_000 });
-  await expect(page.getByTestId("ready-toggle")).toBeVisible();
+  const arenaName = `Backroom ${Date.now().toString(36)}`;
+  await host.goto("/games/new");
+  await host.getByTestId("arena-name-input").fill(arenaName);
+  await host.getByRole("button", { name: "Private arena" }).click();
+  await host.getByTestId("roster-picker").getByText("Secret Host").click();
+  await host.getByTestId("create-server-button").click();
+  await host.waitForURL(/\/games\/[^/]+\/lobby/);
+  const lobbyUrl = host.url();
+
+  await guest.goto("/games");
+  await expect(guest.getByTestId("game-list")).toBeVisible();
+  // Give the list a poll cycle to settle, then assert absence.
+  await guest.waitForTimeout(1500);
+  await expect(guest.getByText(arenaName, { exact: true })).toBeHidden();
+
+  // The shared link still works.
+  await guest.goto(lobbyUrl);
+  await guest.getByTestId("roster-picker").getByText("Invited Guest").click();
+  await guest.getByTestId("join-with-fighter").click();
+  await expect(host.getByText("Invited Guest")).toBeVisible({ timeout: 15_000 });
+  await expect(guest.getByText("Secret Host")).toBeVisible({ timeout: 15_000 });
 });
