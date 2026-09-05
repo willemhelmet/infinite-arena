@@ -1,8 +1,9 @@
 import type { ClientEvent, ServerEvent } from "./protocol";
 
-// The seam. Every screen talks to this interface; the implementation is a
-// MockGameServer today and a WsGameClient tomorrow. Swapping implementations
-// means writing one new class and changing one factory — zero screen changes.
+// The seam. Every screen talks to this interface; the implementation is
+// HttpGameClient (polling) today and could be a WebSocket client tomorrow.
+// Swapping implementations means writing one new class and changing one
+// factory — zero screen changes.
 
 export interface GameClient {
   connect(): Promise<void>;

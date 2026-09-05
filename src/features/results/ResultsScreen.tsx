@@ -20,6 +20,11 @@ export function ResultsScreen({ roomId }: { roomId: string }) {
     }
   }, [state.phase, state.room?.id, roomId, router]);
 
+  // The other fighter left and the arena closed.
+  useEffect(() => {
+    if (state.phase === "browsing_games" && state.error) router.push("/games");
+  }, [state.phase, state.error, router]);
+
   if (!result) {
     return (
       <ArenaPanel>

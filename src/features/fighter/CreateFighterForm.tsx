@@ -4,7 +4,8 @@ import { useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArenaButton } from "@/components/ArenaButton";
 import { ArenaPanel } from "@/components/ArenaPanel";
-import { savePoolFighter } from "@/lib/fighters/pool";
+import { registerFighter } from "@/lib/fighters/api";
+import { saveFighter } from "@/lib/fighters/roster";
 import { useSelfPlayerId } from "@/lib/identity";
 import { FighterPreviewCard } from "./FighterPreviewCard";
 import { GenerateImagePanel } from "./GenerateImagePanel";
@@ -22,26 +23,28 @@ export function CreateFighterForm() {
   const [mode, setMode] = useState<Mode>("generate");
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
 
   const canSave = name.trim().length > 0 && imageUrl !== null && !saving;
 
   async function handleSave() {
     if (!canSave || !selfPlayerId) return;
     setSaving(true);
+    const fighter = saveFighter({
+      name: name.trim(),
+      description: description.trim(),
+      imageUrl,
+      createdBy: selfPlayerId,
+    });
+    // Share it to the registry so it shows up on every device's fighter
+    // list. Best effort: the local roster is already saved, so a failure
+    // here must not block the flow (the gallery re-syncs later).
     try {
-      await savePoolFighter({
-        name: name.trim(),
-        description: description.trim(),
-        imageUrl,
-        createdBy: selfPlayerId,
-      });
-      const returnTo = searchParams.get("returnTo");
-      router.push(returnTo && returnTo.startsWith("/") ? returnTo : "/");
+      await registerFighter(fighter);
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err));
-      setSaving(false);
+      console.warn("[fighters] could not share to the registry:", err);
     }
+    const returnTo = searchParams.get("returnTo");
+    router.push(returnTo && returnTo.startsWith("/") ? returnTo : "/");
   }
 
   return (
@@ -109,11 +112,10 @@ export function CreateFighterForm() {
         </ArenaPanel>
       )}
 
-      {saveError && <p className="text-xs text-red-400">{saveError}</p>}
       <ArenaButton
         fullWidth
         disabled={!canSave}
-        onClick={() => void handleSave()}
+        onClick={handleSave}
         testId="fighter-save-button"
       >
         {saving ? "Saving…" : "Save Fighter"}

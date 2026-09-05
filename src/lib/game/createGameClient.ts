@@ -1,9 +1,9 @@
 import type { GameClient } from "./gameClient";
-import { MockGameServer } from "./mockGameServer";
+import { HttpGameClient } from "./httpGameClient";
 
-// The ONE line that changes when real infra arrives: swap MockGameServer for
-// a WebSocket/oRPC client here (or branch on an env flag), and every screen
-// keeps working untouched.
+// The one place the transport is chosen. HttpGameClient talks to
+// /api/game/* (polling); a WebSocket client would slot in here later and
+// every screen would keep working untouched.
 export function createGameClient(): GameClient {
-  return new MockGameServer();
+  return new HttpGameClient();
 }

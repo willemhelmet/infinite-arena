@@ -48,11 +48,23 @@ export const RoundPromptSchema = z.object({
 });
 export type RoundPrompt = z.infer<typeof RoundPromptSchema>;
 
+// One clip for the fast-h3 model: a self-contained prompt (≤ 800 chars, the
+// model's limit) and a length inside the model's producible range. Shots
+// within a round chain into one continuous broadcast via continue_from_clip_id.
+export const ShotSchema = z.object({
+  prompt: z.string().min(1).max(800),
+  seconds: z.number().min(5.167).max(14.375),
+});
+export type Shot = z.infer<typeof ShotSchema>;
+
 export const FightRoundSchema = z.object({
   round: z.number().int().positive(),
   prompts: z.array(RoundPromptSchema).max(2),
   narration: z.string().nullable(),
   healthAfter: z.record(z.string(), z.number()),
+  // The storyboard the coordinator produced for this round. Optional only
+  // because rounds stored before shots existed lack it.
+  shots: z.array(ShotSchema).optional(),
 });
 export type FightRound = z.infer<typeof FightRoundSchema>;
 

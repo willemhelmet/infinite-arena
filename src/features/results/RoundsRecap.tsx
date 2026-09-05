@@ -1,6 +1,7 @@
 "use client";
 
 import type { FightRound, Room } from "@/lib/game/schemas";
+import { Storyboard } from "@/features/fight/Storyboard";
 
 // Every exchange of the fight, blow by blow: both moves, the narrator's call,
 // and where health stood when the dust cleared.
@@ -44,6 +45,11 @@ export function RoundsRecap({
             <p className="mt-2 border-l-2 border-brand/40 pl-2 text-xs italic leading-5 text-zinc-300">
               {round.narration}
             </p>
+          )}
+          {round.shots && round.shots.length > 0 && (
+            <div className="mt-2">
+              <Storyboard round={round.round} shots={round.shots} />
+            </div>
           )}
         </div>
       ))}
