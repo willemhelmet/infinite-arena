@@ -34,6 +34,7 @@ export function CreateFighterForm() {
       description: description.trim(),
       imageUrl,
       createdBy: selfPlayerId,
+      createdAt: Date.now(),
     });
     // Share it to the registry so it shows up on every device's fighter
     // list. Best effort: the local roster is already saved, so a failure

@@ -7,3 +7,6 @@ node_modules
 *.tsbuildinfo
 .vercel
 .env*
+
+# Playwright test artifacts
+/test-results/
