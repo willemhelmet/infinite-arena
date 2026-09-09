@@ -58,6 +58,7 @@ async def main() -> None:
         await arena.start()
     else:
         arena = ArenaApi(config.arena_url, config.broadcaster_secret)
+    logger.info("announcer audio: %s", "Fish enabled (two voices)" if config.fish_api_key else "disabled")
     mixer = NarrationMixer()
     narrator = FishNarrator(config.fish_api_key,
         (config.fish_reference_id, config.fish_secondary_reference_id), config.fish_model) if config.fish_api_key else None
@@ -111,7 +112,8 @@ async def main() -> None:
         tasks.append(asyncio.create_task(pacer.run(), name="pacer"))
         logger.info(
             "on air: %dx%d@%dfps → sink=%s · arena=%s · episode mode",
-            width, height, MODEL_FPS, config.sink, config.arena_url,
+            width, height, MODEL_FPS, config.sink,
+            f"twitch:{config.twitch_channel}" if config.control_plane == "twitch" else config.arena_url,
         )
         done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for task in done:

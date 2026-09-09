@@ -7,10 +7,11 @@ VHS_ENABLED=0. Deploy and validate the direct Twitch broadcast first.
 
 Twitch is now the player and prompt/chat frontend. The standalone Python
 planner and IRC adapter remove the Vercel/Redis dependency in default mode.
-Render deployment is prepared; optional bot credentials enable chat replies.
+Render deployment is live on codex/render-twitch-mvp; optional bot credentials enable chat replies.
 Live anonymous join verified for willemhelmet. VHS synthetic pacing test passed;
-real fight and Linux Docker build validation remain pending. No cloud resources
-have been created, and no commits/pushes made.
+Linux MVP Docker build passed; hosted full-fight validation remains pending.
+The broadcaster deployment branch is committed and pushed; see HOSTING.md for
+the active Render worker.
 
 Real planner verification: Washington vs Napoleon returned all 12 scenes,
 116 seconds, both fighter challenges and referee dialogue; longest prompt

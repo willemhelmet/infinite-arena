@@ -68,8 +68,8 @@ quality and cloud CPU capacity still need validation. Run
 The adapter adds observed hold delay to chat/verdict timing. Initial holds are
 black and silent; later processing stalls repeat the picture with silence.
 Normal shutdown discards buffered tail; stop only after the delayed verdict
-has aired. The Docker image still needs a Linux build check (Docker is not
-installed on this development host).
+has aired. The MVP Docker image built successfully on Render on 2026-09-09; the
+VHS-enabled image has not been validated there.
 
 The worker still uses fast-h3. Migrating to the new reference-conditioned model
 requires its upload/media adapter and actual reference assets; changing only
@@ -78,3 +78,18 @@ broadcaster/episode.py and episode_spec.json. The old Next planner belongs only
 to CONTROL_PLANE=web. That legacy mode still requires ARENA_URL,
 BROADCASTER_SECRET and shared Redis when hosted on Vercel; it is not used by
 this Render blueprint.
+
+## Active deployment
+
+Created through the Render API on 2026-09-09 in Willem Helmet's workspace:
+`infinite-arena-broadcaster`, service `srv-dagf9mf40ujc73euophg`, Virginia,
+4 CPU / 8 GB, one worker and 10 GB disk. It deploys the GitHub branch
+`codex/render-twitch-mvp` with automatic deploys disabled. The API-created
+service follows render.yaml but is not managed by a Blueprint sync.
+
+Dashboard: https://dashboard.render.com/worker/srv-dagf9mf40ujc73euophg
+
+Linux image build, Twitch IRC join, Reactor READY and RTMP encoder startup
+were verified. A complete viewer-submitted fight on the hosted worker remains
+an acceptance check. Fish credentials are stored in Render; bot credentials
+are not configured, so chat input works but outgoing chat replies are disabled.
