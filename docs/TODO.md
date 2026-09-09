@@ -1,3 +1,9 @@
+## Deployment acceptance blocker
+
+The Render worker sends idle media successfully. Fish validation returned
+HTTP 401 for the restored key; replace it in Render and redeploy before the
+first full hosted fight. See HOSTING.md for measured transport counters.
+
 ## Render MVP scope
 
 VHS is deferred. The Render image contains Python and ffmpeg only, with

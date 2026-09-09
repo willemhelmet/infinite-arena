@@ -93,3 +93,10 @@ Linux image build, Twitch IRC join, Reactor READY and RTMP encoder startup
 were verified. A complete viewer-submitted fight on the hosted worker remains
 an acceptance check. Fish credentials are stored in Render; bot credentials
 are not configured, so chat input works but outgoing chat replies are disabled.
+
+First minute after restart: 1,440 frames sent, zero RTMP video/audio queue
+drops; 1,302 source frames and 138 repeated frames, with 2.73 seconds of
+source audio underflow. This measures transport pacing, not viewer perception.
+Fish credential validation returned HTTP 401: replace FISH_API_KEY and redeploy
+before testing fights. The director requires successful commentary preparation,
+so this credential failure blocks episodes while idle broadcasting continues.
