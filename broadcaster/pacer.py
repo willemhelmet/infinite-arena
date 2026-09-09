@@ -58,6 +58,7 @@ class Pacer:
         video: VideoFormat,
         audio: AudioFormat,
         overlay: Overlay | None = None,
+        narration=None,
     ) -> None:
         if audio.sample_rate % video.fps != 0:
             raise ValueError(
@@ -66,6 +67,7 @@ class Pacer:
         self._sink = sink
         self._video = video
         self._audio = audio
+        self._narration = narration
         self._overlay = overlay
         self._overlay_errors = 0
         self._samples_per_tick = audio.sample_rate // video.fps
@@ -84,10 +86,16 @@ class Pacer:
         self.ticks = 0
         self.repeated_frames = 0
         self.silent_ticks = 0
+        self.underflow_samples = 0
+        self.output_silent_ticks = 0
         self.dropped_frames = 0
         self.dropped_samples = 0
 
     # ------------------------------------------------- model-facing intake
+
+    def clear_narration(self) -> None:
+        if self._narration:
+            self._narration.clear()
 
     def submit_video(self, frame: np.ndarray) -> None:
         """Buffer one model frame. Called from the track's frame callback."""
@@ -131,6 +139,7 @@ class Pacer:
         needed = self._samples_per_tick
         if self._audio_buffered == 0:
             self.silent_ticks += 1
+            self.underflow_samples += needed
             return self._silence
         parts: list[np.ndarray] = []
         while needed > 0 and self._audio_chunks:
@@ -145,6 +154,7 @@ class Pacer:
         pulled = np.concatenate(parts) if len(parts) > 1 else parts[0]
         self._audio_buffered -= pulled.size
         if needed > 0:
+            self.underflow_samples += needed
             pulled = np.concatenate([pulled, np.zeros(needed, dtype=np.int16)])
         return pulled
 
@@ -186,19 +196,25 @@ class Pacer:
                             self._overlay_errors,
                         )
             self._sink.send_video(outgoing)
-            self._sink.send_audio(self._pull_audio_tick())
+            audio = self._pull_audio_tick()
+            mixed = self._narration.mix(audio) if self._narration else audio
+            if not np.any(mixed):
+                self.output_silent_ticks += 1
+            self._sink.send_audio(mixed)
             self.ticks += 1
 
             now = time.monotonic()
             if now - last_report >= 60.0:
                 logger.info(
                     "[pacer] ticks=%d live_frames=%d repeats=%d "
-                    "silent_ticks=%d dropped=%df/%.1fs-audio",
+                    "source_empty_ticks=%d dropped=%df/%.1fs-audio source_underflow=%.2fs output_silence=%.2fs",
                     self.ticks,
                     self.ticks - self.repeated_frames,
                     self.repeated_frames,
                     self.silent_ticks,
                     self.dropped_frames,
                     self.dropped_samples / self._audio.sample_rate,
+                    self.underflow_samples / self._audio.sample_rate,
+                    self.output_silent_ticks / self._video.fps,
                 )
                 last_report = now

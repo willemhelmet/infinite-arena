@@ -1,15 +1,7 @@
-"""The arena overlay: fight status on every outgoing frame.
+"""Broadcast overlay showing the current matchup and queue status.
 
-  top-left     idle:    type "!fight <fighter>" in the arena chat
-               card:    NEXT  A vs B
-               fight:   ROUND 2/5   A ▮▮▮▮▮▮▯▯▯▯ 61   B ▮▮▮▮▮▮▮▮▯▯ 84
-               verdict: WINNER  A
-  bottom-left  the narrator's latest call (two lines max)
-  top-right    READY n · BUILDING m
-
-State comes from the Show (the fight lives there, not on the wire) plus the
-link's queue mirror. Panels are rasterized with Pillow only when their text
-changes and alpha-blended with numpy per frame, per the Overlay contract.
+No planned ending is exposed before playback. Panels are cached Pillow
+rasters blended into outgoing frames by the existing pacer.
 """
 
 from __future__ import annotations
@@ -46,11 +38,6 @@ def _load_font(size: int):
     return ImageFont.load_default()
 
 
-def _bar(health: int, width: int = 10) -> str:
-    filled = max(0, min(width, round(health / 100 * width)))
-    return "▮" * filled + "▯" * (width - filled)
-
-
 class ArenaOverlay(Overlay):
     def __init__(self, link: "ReactorLink", show: "Show") -> None:
         self._link = link
@@ -66,19 +53,11 @@ class ArenaOverlay(Overlay):
         fight = show.fight
         if not self._link.connected:
             return "reconnecting to the arena…"
-        if show.program == "card" and fight:
-            return f"NEXT  {fight.a.fighter['name']} vs {fight.b.fighter['name']}"
-        if show.program == "fight" and fight:
-            a, b = fight.a, fight.b
-            state = {"open": "ATTACK NOW", "judging": "JUDGING", "playing": ""}[fight.round_state]
-            return (f"ROUND {fight.round}/{fight.max_rounds}   {a.fighter['name']} {_bar(a.health)} {a.health}"
-                    f"   {b.fighter['name']} {_bar(b.health)} {b.health}" + (f"   {state}" if state else ""))
-        if show.program == "verdict" and fight:
-            return f"WINNER  {fight.winner.fighter['name']}" if fight.winner else "A DRAW"
+        if fight:
+            return f"{fight.state.upper()}  {fight.a.description} vs {fight.b.description}"
         if show.queue:
-            nxt = ", ".join(f"{e.fighter['name']} ({e.handle})" for e in show.queue[:2])
-            return f"UP NEXT  {nxt} — !fight <fighter> to join"
-        return 'type "!fight <fighter>" in the arena chat'
+            return f"WAITING  {show.queue[0].description} — #fight <contestant> to join"
+        return 'type "#fight <contestant>" in Arena chat'
 
     def _badge(self) -> str:
         return f"READY {self._link.playout_queued} · BUILDING {self._link.generation_queued}"

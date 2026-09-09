@@ -1,0 +1,42 @@
+services:
+  - type: worker
+    name: infinite-arena-broadcaster
+    runtime: docker
+    dockerfilePath: ./broadcaster/Dockerfile
+    dockerContext: .
+    plan: 4c-8g
+    numInstances: 1
+    autoDeployTrigger: off
+    maxShutdownDelaySeconds: 60
+    # A disk prevents overlapping replacement instances during deployment.
+    disk:
+      name: broadcast-scratch
+      mountPath: /var/data
+      sizeGB: 10
+    envVars:
+      - key: TWITCH_CHANNEL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: REACTOR_API_KEY
+        sync: false
+      - key: RTMP_URL
+        sync: false
+      - key: FISH_API_KEY
+        sync: false
+      - key: FISH_REFERENCE_ID
+        sync: false
+      - key: FISH_SECONDARY_REFERENCE_ID
+        sync: false
+      - key: SINK
+        value: rtmp
+      - key: CONTROL_PLANE
+        value: twitch
+      - key: VHS_ENABLED
+        value: "0"
+      - key: TMPDIR
+        value: /var/data
+      - key: REACTOR_MODEL
+        value: fast-h3
+      - key: PLAYBACK_DELAY_S
+        value: "12"

@@ -260,6 +260,8 @@ class ReactorLink:
 
     async def _teardown(self) -> None:
         self._ready.clear()
+        if self._pacer is not None:
+            self._pacer.clear_narration()
         reactor, self._reactor = self._reactor, None
         if reactor is None:
             return

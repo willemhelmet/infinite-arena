@@ -1,37 +1,25 @@
-"""The show director against fakes: a fake fast-h3 link and a fake arena.
-
-Drives a full program cycle without a model, a network, or an encoder:
-idle bios → two `!fight`s → card → gate → round 1 opens → both `!attack` →
-coordinator → shots enqueued → gate → round 2 opens → the round clock runs
-out → ... → verdict → idle. Run with `python -m unittest` from broadcaster/.
-"""
-
-from __future__ import annotations
-
+"""Director behavior with simulated H3: queueing, continuity, playback and recovery."""
 import asyncio
 import json
 import sys
-import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-import show as show_module  # noqa: E402
-from show import Show  # noqa: E402
+import show as show_module
+from show import Show
 
 
 class FakeLink:
-    """Just enough of ReactorLink: capacities, queues, enqueue/pop/move, listeners."""
-
-    def __init__(self) -> None:
+    def __init__(self):
         self.connected = True
         self.min_seconds, self.max_seconds = 5.167, 14.375
-        self.generation_capacity, self.playout_capacity = 20, 10
-        self.generation_clips: list[dict] = []
-        self.playout_clips: list[dict] = []
-        self.listeners = []
-        self.commands: list[tuple[str, dict]] = []
+        self.generation_capacity, self.playout_capacity = 20, 20
+        self.generation_clips, self.playout_clips = [], []
+        self.listeners, self.commands = [], []
+        self.autoplay = True
+        self.playing = None
         self._n = 0
 
     @property
@@ -45,48 +33,53 @@ class FakeLink:
     def add_listener(self, fn):
         self.listeners.append(fn)
 
+    def emit(self, kind, clip):
+        for fn in self.listeners:
+            fn(kind, {"clip": clip})
+
     async def send_command(self, command, data):
         self.commands.append((command, data))
         if command == "enqueue":
             self._n += 1
-            clip = {"clip_id": f"clip-{self._n}", "metadata": data["metadata"], "ready": False,
-                    "prompt": data["prompt"], "seconds": data.get("seconds", 6)}
-            pos = data.get("position")
-            if pos is None or pos >= len(self.generation_clips):
-                self.generation_clips.append(clip)
-            else:
-                self.generation_clips.insert(pos, clip)
+            clip = {**data, "clip_id": f"clip-{self._n}", "ready": False}
+            self.generation_clips.append(clip)
             return {"clip": clip}
+        if command == "set_autoplay":
+            self.autoplay = data["enabled"]
         if command == "pop":
-            for lst in (self.generation_clips, self.playout_clips):
-                for c in lst:
-                    if c["clip_id"] == data["clip_id"]:
-                        lst.remove(c)
-                        return {"clip": c}
-            return None
-        if command == "move":
-            return {"clip": {}}
+            for queue in (self.generation_clips, self.playout_clips):
+                for clip in queue:
+                    if clip["clip_id"] == data["clip_id"]:
+                        queue.remove(clip)
+                        return {"clip": clip}
+        if command == "stop" and self.playing:
+            self.emit("clip_stopped", self.playing)
+            self.playing = None
         return {}
 
-    def start_group(self, group_id: str) -> None:
-        """Pretend the first clip of a group went on air."""
-        for c in list(self.generation_clips) + list(self.playout_clips):
-            if json.loads(c["metadata"])["group_id"] == group_id:
-                for fn in self.listeners:
-                    fn("clip_started", {"clip": c})
-                return
-        raise AssertionError(f"no clip for group {group_id}")
+    def build(self):
+        if self.generation_clips and len(self.playout_clips) < self.playout_capacity:
+            clip = self.generation_clips.pop(0)
+            clip["ready"] = True
+            self.playout_clips.append(clip)
+            self.emit("clip_generated", clip)
+
+    def start(self):
+        assert self.autoplay and not self.playing
+        self.playing = self.playout_clips.pop(0)
+        self.emit("clip_started", self.playing)
+        return self.playing
+
+    def finish(self):
+        assert self.playing
+        clip, self.playing = self.playing, None
+        self.emit("clip_finished", clip)
+        return clip
 
 
 class FakeArena:
-    def __init__(self) -> None:
-        self.said: list[tuple[str, str]] = []
-        self.published: list[dict] = []
-        self.resolves: list[dict] = []
-        self.fighters = [
-            {"id": "f1", "name": "Karg", "imageUrl": "https://x/k.png", "description": "a rusted titan", "createdBy": "p1"},
-            {"id": "f2", "name": "Vesper", "imageUrl": "https://x/v.png", "description": "a holographic duelist", "createdBy": "p2"},
-        ]
+    def __init__(self):
+        self.said, self.published, self.plans = [], [], []
 
     async def read_chat(self, since):
         return since, []
@@ -97,35 +90,15 @@ class FakeArena:
     async def publish_show(self, state):
         self.published.append(state)
 
-    async def list_fighters(self):
-        return self.fighters
-
-    async def resolve_round(self, payload):
-        self.resolves.append(payload)
-        a, b = payload["fighters"]
-        return {
-            "winnerPlayerId": a["playerId"],
-            "damage": {a["playerId"]: 0, b["playerId"]: 60},
-            "narration": f"{a['fighter']['name']} lands it clean.",
-            "shots": [{"prompt": "Hard cut to a wide shot. Test.", "seconds": 6}],
-            "setting": "a test pit",
-        }
-
-    async def program(self, payload):
-        return {"caption": payload["kind"], "setting": "a test pit",
-                "shots": [{"prompt": f"Hard cut to a wide shot of the {payload['kind']}.", "seconds": 6}]}
-
-
-def tag_of(link: FakeLink, clip_id: str) -> dict:
-    for c in link.generation_clips + link.playout_clips:
-        if c["clip_id"] == clip_id:
-            return json.loads(c["metadata"])
-    raise AssertionError(clip_id)
+    async def episode(self, payload):
+        self.plans.append(payload)
+        return {"winner": "A", "ending": f"{payload['a']} wins!", "setting": "test arena",
+            "shots": [{"prompt": f"Hard cut to scene {i}.", "title": f"Beat {i}", "seconds": 12, "narration": f"Tactic {i}."} for i in range(1, 13)]}
 
 
 def make_show(link, arena, **kw):
     return Show(link, arena, arena_name="Test Arena", idle_queue_target=2,
-                round_seconds=kw.get("round_seconds", 60), max_rounds=kw.get("max_rounds", 3), chat_poll_s=1)
+                chat_poll_s=0.1, playback_delay_s=kw.get("playback_delay_s", 0))
 
 
 def chat(handle, text, player=None):
@@ -133,110 +106,243 @@ def chat(handle, text, player=None):
 
 
 class ShowTests(unittest.IsolatedAsyncioTestCase):
-    async def test_bio_filler_is_tagged_generated(self):
+    async def pair(self, show):
+        await show._on_chat(chat("alice", "#fight sentient turtle monk"))
+        await show._on_chat(chat("bob", "#fight 1000 gerbils"))
+        await show._tick()
+
+    async def air(self, show, link):
+        while link.generation_clips:
+            link.build()
+        await show._tick()
+        while link.playout_clips:
+            link.start()
+            await show._tick()
+            link.finish()
+            await show._tick()
+
+    async def test_two_text_entries_complete_episode_then_next_pair(self):
         link, arena = FakeLink(), FakeArena()
         show = make_show(link, arena)
-        await show._enqueue_bio()
-        self.assertEqual(len(link.generation_clips), 1)
-        tag = tag_of(link, "clip-1")
-        self.assertTrue(tag["generated"])
-        self.assertEqual(tag["kind"], "bio")
-        self.assertEqual(tag["title"], "Karg")
+        await self.pair(show)
+        first = show.fight.id
+        self.assertEqual(arena.plans[0]["a"], "sentient turtle monk")
+        self.assertEqual(arena.plans[0]["b"], "1000 gerbils")
+        self.assertEqual(show.fight.state, "buffering")
+        # No registry, portrait, attack, or additional input is involved.
+        await show._on_chat(chat("carol", "#fight a paper dragon"))
+        await show._on_chat(chat("dave", "#fight a librarian"))
+        await self.air(show, link)
+        self.assertIsNone(show.fight)
+        self.assertTrue(any("VERDICT — sentient turtle monk wins!" in t for _, t in arena.said))
+        await show._tick()
+        self.assertNotEqual(show.fight.id, first)
+        self.assertEqual(show.fight.a.handle, "carol")
 
-    async def test_full_fight_cycle(self):
+    async def test_chain_and_two_clip_buffer_and_reveal_after_final_completion(self):
         link, arena = FakeLink(), FakeArena()
-        show = make_show(link, arena, max_rounds=2)
-        await show._enqueue_bio()  # filler waiting in the generation queue
-
-        # Two viewers queue up; a fight card is announced and enqueued ahead of filler.
-        await show._on_chat(chat("alice", "!fight karg"))
-        self.assertEqual(show.program, "idle")
-        await show._on_chat(chat("bob", "!fight ves"))
-        self.assertEqual(show.program, "card")
+        show = make_show(link, arena, playback_delay_s=12)
+        await self.pair(show)
+        clips = list(link.generation_clips)
+        self.assertNotIn("continue_from_clip_id", clips[0])
+        for index, (before, after) in enumerate(zip(clips, clips[1:]), 2):
+            if index in (3, 5):
+                self.assertNotIn("continue_from_clip_id", after)
+            else:
+                self.assertEqual(after["continue_from_clip_id"], before["clip_id"])
+        link.build()
+        await show._tick()
+        self.assertFalse(link.autoplay)
+        link.build()
+        await show._tick()
+        self.assertTrue(link.autoplay)
+        while link.generation_clips:
+            link.build()
+        for i in range(12):
+            link.start()
+            await show._tick()
+            self.assertEqual(show.fight.beat, i + 1)
+            self.assertNotIn("winner", json.dumps(show.show_state()))
+            self.assertFalse(any("VERDICT" in t for _, t in arena.said))
+            link.finish()
+            await show._tick()
         self.assertIsNotNone(show.fight)
-        first = tag_of(link, link.generation_clips[0]["clip_id"])
-        self.assertEqual(first["kind"], "card", "fight clips insert ahead of filler")
-        self.assertTrue(any("NEXT FIGHT" in t for _, t in arena.said))
-
-        # Attacks before the round opens are refused.
-        await show._on_chat(chat("alice", "!attack a punch"))
-        self.assertTrue(any("isn't open" in t for _, t in arena.said))
-
-        # The card goes on air → round 1 opens.
-        link.start_group(show._awaiting_group)
+        self.assertFalse(any("VERDICT" in t for _, t in arena.said))
+        show.fight.verdict_at -= 13
         await show._tick()
-        self.assertEqual(show.program, "fight")
-        self.assertEqual(show.fight.round, 1)
-        self.assertEqual(show.fight.round_state, "open")
-
-        # Spectators can't attack; both fighters can, once each.
-        await show._on_chat(chat("carol", "!attack a kick"))
-        self.assertIsNone(show.fight.a.attack)
-        await show._on_chat(chat("alice", "!attack a rusted haymaker"))
-        await show._on_chat(chat("alice", "!attack again"))
-        self.assertEqual(show.fight.a.attack, "a rusted haymaker")
-        self.assertEqual(show.fight.round_state, "open")
-        await show._on_chat(chat("bob", "!attack a flicker step"))
-
-        # Both in → judged → shots enqueued → waiting for them to air.
-        self.assertEqual(len(arena.resolves), 1)
-        self.assertEqual(show.fight.round_state, "playing")
-        self.assertEqual(show.fight.b.health, 40)
-        self.assertTrue(any(k == "narrator" for k, _ in arena.said))
-        self.assertIsNotNone(show._awaiting_group)
-        round_tag = tag_of(link, link.generation_clips[0]["clip_id"]) if link.generation_clips else None
-        self.assertIn(round_tag["kind"], ("round", "card"))
-
-        # Round 1's clips air → round 2 opens; the clock runs out with only
-        # one attack in → the missing side gets the default and it resolves.
-        link.start_group(show._awaiting_group)
+        self.assertIsNone(show.fight)
+        self.assertEqual(sum("VERDICT" in t for _, t in arena.said), 1)
+        # Duplicate old events never trigger another outcome.
+        link.emit("clip_finished", clips[-1])
         await show._tick()
-        self.assertEqual(show.fight.round, 2)
-        await show._on_chat(chat("alice", "!attack finish it"))
-        show.fight.deadline_at = time.time() - 1  # the clock ran out
-        await show._tick()
-        self.assertEqual(len(arena.resolves), 2)
-        self.assertEqual(arena.resolves[1]["fighters"][1]["prompt"]["text"], show_module._DEFAULT_ATTACK)
-        self.assertTrue(show.fight.finished)
-        self.assertEqual(show.fight.winner.handle, "alice")
+        self.assertEqual(sum("VERDICT" in t for _, t in arena.said), 1)
 
-        # The last round airs → verdict enqueued → airs → idle, fight cleared.
-        link.start_group(show._awaiting_group)
+    async def test_commentary_waits_for_playback_delay_and_ignores_duplicate_events(self):
+        link, arena = FakeLink(), FakeArena()
+        show = make_show(link, arena, playback_delay_s=12)
+        await self.pair(show)
+        while link.generation_clips:
+            link.build()
         await show._tick()
-        self.assertEqual(show.program, "verdict")
-        self.assertTrue(any("VERDICT" in t and "Karg" in t for _, t in arena.said))
-        link.start_group(show._awaiting_group)
+        self.assertFalse(any(k == "narrator" for k, _ in arena.said))
+        clip = link.start()
         await show._tick()
-        self.assertEqual(show.program, "idle")
+        self.assertFalse(any(k == "narrator" for k, _ in arena.said))
+        due, scene, line = show.fight.narration_due[clip["clip_id"]]
+        show.fight.narration_due[clip["clip_id"]] = (due - 13, scene, line)
+        link.emit("clip_started", clip)
+        await show._tick()
+        link.emit("clip_started", clip)
+        await show._tick()
+        self.assertEqual([t for k, t in arena.said if k == "narrator"], ["Tactic 1."])
+        link.finish()
+        link.start()
+        await show._abort_episode("Test cancellation")
+        await show._tick()
+        self.assertEqual(sum(k == "narrator" for k, _ in arena.said), 1)
+
+    async def test_aliases_duplicates_locked_pair_and_pending_leave(self):
+        link, arena = FakeLink(), FakeArena()
+        show = make_show(link, arena)
+        await show._on_chat(chat("alice", "%FiGhT turtle"))
+        await show._on_chat(chat("renamed", "!fight something else", "alice"))
+        self.assertEqual(len(show.queue), 1)
+        await show._on_chat(chat("bob", "!fight gerbils"))
+        await show._tick()
+        await show._on_chat(chat("alice", "#leave"))
+        self.assertEqual(show.fight.a.description, "turtle")
+        await show._on_chat(chat("alice", "#fight a future turtle"))
+        await show._on_chat(chat("alice", "#leave"))
+        self.assertEqual(show.queue, [])
+        self.assertEqual(show.fight.a.description, "turtle")
+        await show._on_chat(chat("alice", "#fight"))
+        self.assertEqual(show.queue, [])
+
+    async def test_planning_does_not_block_chat(self):
+        link, arena = FakeLink(), FakeArena()
+        show = make_show(link, arena)
+        entered, release = asyncio.Event(), asyncio.Event()
+        original = arena.episode
+        async def slow(payload):
+            entered.set()
+            await release.wait()
+            return await original(payload)
+        arena.episode = slow
+        task = asyncio.create_task(self.pair(show))
+        await entered.wait()
+        await show._on_chat(chat("carol", "#fight lightning"))
+        self.assertEqual(show.queue[0].handle, "carol")
+        release.set()
+        await task
+
+    async def test_idle_needs_no_registry_and_cannot_interleave_episode(self):
+        link, arena = FakeLink(), FakeArena()
+        show = make_show(link, arena)
+        await show._on_chat(chat("alice", "#prompt a wrestling stadium"))
+        await show._enqueue_idle()
+        self.assertIn("wrestling stadium", link.generation_clips[0]["prompt"])
+        await self.pair(show)
+        self.assertTrue(all(not json.loads(c["metadata"])["generated"] for c in link.generation_clips))
+        await show._enqueue_idle()
+        self.assertEqual(len(link.generation_clips), 12)
+        await show._on_chat(chat("carol", "#prompt a lake"))
+        self.assertEqual(show.setting, "a wrestling stadium")
+
+    async def test_generation_failure_cleans_remaining_scenes_and_starts_next(self):
+        link, arena = FakeLink(), FakeArena()
+        show = make_show(link, arena)
+        await self.pair(show)
+        await show._on_chat(chat("carol", "#fight c"))
+        await show._on_chat(chat("dave", "#fight d"))
+        failed = link.generation_clips[2]
+        link.emit("clip_failed", failed)
+        await show._tick()
+        self.assertIsNone(show.fight)
+        self.assertEqual(link.generation_clips, [])
+        self.assertFalse(any("VERDICT" in t for _, t in arena.said))
+        await show._tick()
+        self.assertEqual(show.fight.a.handle, "carol")
+
+    async def test_partial_enqueue_is_aborted_without_duplicate_retry(self):
+        link, arena = FakeLink(), FakeArena()
+        original = link.send_command
+        async def fail(command, data):
+            if command == "enqueue" and link._n == 2:
+                # Accepted, but its response was lost.
+                await original(command, data)
+                return None
+            return await original(command, data)
+        link.send_command = fail
+        show = make_show(link, arena)
+        await self.pair(show)
+        self.assertIsNone(show.fight)
+        self.assertEqual(link.generation_clips, [])
+        self.assertEqual(link._n, 3)
+        self.assertTrue(any("cancelled" in t for _, t in arena.said))
+
+    async def test_timeout_cancels_without_fabricated_verdict(self):
+        link, arena = FakeLink(), FakeArena()
+        show = make_show(link, arena)
+        await self.pair(show)
+        show.fight.progress_at -= show_module._GATE_TIMEOUT_S + 1
+        await show._tick()
+        self.assertIsNone(show.fight)
+        self.assertFalse(any("VERDICT" in t for _, t in arena.said))
+        self.assertEqual(link.generation_clips, [])
+
+    async def test_planner_retries_once_then_cancels(self):
+        link, arena = FakeLink(), FakeArena()
+        show = make_show(link, arena)
+        with patch.object(arena, "episode", side_effect=RuntimeError("unavailable")) as planner:
+            await self.pair(show)
+            self.assertEqual(planner.call_count, 2)
+        self.assertIsNone(show.fight)
+        self.assertTrue(any("cancelled" in t for _, t in arena.said))
+
+    async def test_reconnect_discards_interrupted_episode(self):
+        link, arena = FakeLink(), FakeArena()
+        show = make_show(link, arena)
+        await self.pair(show)
+        link.connected = False
+        await show._tick()
+        self.assertEqual(show.show_state()["program"], "offline")
+        link.connected = True
+        await show._tick()
+        self.assertIsNone(show.fight)
+        self.assertEqual(link.generation_clips, [])
+
+    async def test_insufficient_capacity_never_queues_half_story(self):
+        link, arena = FakeLink(), FakeArena()
+        link.generation_capacity = 3
+        show = make_show(link, arena)
+        await self.pair(show)
+        self.assertEqual(link.generation_clips, [])
         self.assertIsNone(show.fight)
 
-        state = show.show_state()
-        self.assertEqual(state["program"], "idle")
-        self.assertEqual(state["queue"], [])
+    async def test_twelve_scenes_complete_with_ten_slot_playout_queue(self):
+        link, arena = FakeLink(), FakeArena()
+        link.playout_capacity = 10
+        show = make_show(link, arena)
+        await self.pair(show)
+        for _ in range(40):
+            link.build()
+            if link.playing:
+                link.finish()
+            await show._tick()
+            if link.autoplay and link.playout_clips:
+                link.start()
+            if not show.fight:
+                break
+        self.assertIsNone(show.fight)
+        self.assertEqual(sum("VERDICT" in text for _, text in arena.said), 1)
 
-    async def test_gate_timeout_advances(self):
+    async def test_normal_chat_quiet_unknown_command_explained(self):
         link, arena = FakeLink(), FakeArena()
         show = make_show(link, arena)
-        await show._on_chat(chat("alice", "!fight karg"))
-        await show._on_chat(chat("bob", "!fight vesper"))
-        self.assertEqual(show.program, "card")
-        show._awaiting_since -= show_module._GATE_TIMEOUT_S + 1
-        await show._tick()
-        self.assertEqual(show.program, "fight")
-        self.assertEqual(show.fight.round_state, "open")
-
-    async def test_queue_and_leave(self):
-        link, arena = FakeLink(), FakeArena()
-        show = make_show(link, arena)
-        await show._on_chat(chat("alice", "!fight karg"))
-        await show._on_chat(chat("alice", "!fight karg"))
-        self.assertEqual(len(show.queue), 1)
-        self.assertTrue(any("already in the queue" in t for _, t in arena.said))
-        await show._on_chat(chat("alice", "!leave"))
-        self.assertEqual(show.queue, [])
-        await show._on_chat(chat("zed", "!fight nobody-here"))
-        self.assertTrue(any("no fighter matches" in t for _, t in arena.said))
-        self.assertEqual(show.show_state()["program"], "idle")
+        await show._on_chat(chat("alice", "hello"))
+        self.assertEqual(arena.said, [])
+        await show._on_chat(chat("alice", "#figth turtle"))
+        self.assertIn("#help", arena.said[-1][1])
 
 
 if __name__ == "__main__":

@@ -1,9 +1,15 @@
+> Current production direction: **Twitch-only**. Run `CONTROL_PLANE=twitch`
+> (default): Python reads Twitch chat and plans episodes directly; Vercel and
+> Redis are not required. See `docs/HOSTING.md` at the repository root for the
+> Render worker and secrets. The web workflows below are retained legacy mode
+> (`CONTROL_PLANE=web`). Viewer commands use `!fight`, `!queue`, `!leave`, `!help`.
+
 # Infinite Arena broadcaster
 
-The arena's one channel: a Python process that owns a fast-h3 session, turns
-the game in the arena's chat into video, and streams it itself — no Twitch,
-no YouTube. Viewers watch on the web app's `/watch` page; the same page's
-chat is where they type `!fight` and `!attack`.
+The arena's director: a Python process that owns a fast-h3 session and turns
+the game in arena chat into video. Its default output is HLS for `/watch`;
+the public `/` page embeds the configured Twitch channel. An RTMP sink is
+also available. Both pages use the app's Arena chat for `#fight`.
 
 ```
 arena chat (web app) ──▶ Show ──▶ coordinator (web app) ──▶ shots
@@ -26,38 +32,37 @@ overlay.
 
 ## The show
 
-| Program   | What's on air                                                                 | What moves it on                              |
-| --------- | ----------------------------------------------------------------------------- | --------------------------------------------- |
-| `idle`    | Fighter bios from the registry, tagged `generated: true` (evictable filler)   | Two people in the queue                       |
-| `card`    | The next fight announced: each fighter, then the face-off                     | The card's first clip starts playing          |
-| `fight`   | Rounds: `!attack` window → coordinator judges → the round's shots air         | The round's first clip starts playing         |
-| `verdict` | The winner's moment                                                            | Its first clip starts playing → back to idle  |
+The director accepts `#fight <description>` from the website Arena chat.
+Two distinct browser identities fill a matchup, then `/api/coordinator/episode`
+plans one complete twelve-scene story. `!fight` and `%fight` are aliases.
+No registry lookup, image generation, portrait confirmation, or attack window
+is involved. Ordinary chat continues while the narrator prepares the episode.
 
-Rounds are **gated on the broadcast**: the next `!attack` window opens when
-the previous round's clips start playing, read off the metadata echo on
-`clip_started`. If the echo never comes (a build failed, the queue is deep)
-the show moves on after `_GATE_TIMEOUT_S`. If a fighter doesn't attack within
-`ROUND_SECONDS`, their side gets a default move and the round resolves.
+The twelve shots are enqueued sequentially, breaking continuity at the second
+fighter entrance and the face-off. Other shots continue from the preceding
+clip ID. Every prompt repeats its visible cast and the arena,
+with a hard cut, one visible action, a camera instruction, and sound.
+A capacity check admits the whole episode. A partial enqueue is cancelled and
+cleaned up; an unacknowledged enqueue is not retried because that could duplicate
+an accepted scene. The opening two clips buffer with autoplay off, then autoplay
+runs the chain. Idle clips are cleared before the episode and are not inserted
+during it. Clip durations are clamped to deployment bounds.
 
-Chat commands (from the web app's `/api/chat`, polled every `CHAT_POLL_S`):
+`clip_started` advances the public beat. Only completion of ALL episode clips
+allows the result, after `PLAYBACK_DELAY_S` (default 12 seconds) to allow for
+stream delivery. No result or future narration is published while rendering.
+This delay is a deployment allowance, not exact synchronization with each
+Twitch viewer. The next pending pair follows automatically.
 
-- `!fight <fighter>` — enter the queue with a registry fighter (name match,
-  case-insensitive, unique substring works). Two in the queue starts a card.
-- `!attack <text>` — your move for the open round; one per round, 280 chars.
-  Only the two fighters can; spectators are ignored silently.
-- `!leave`, `!fighters`, `!queue`, `!help`.
+Planner failures retry once. Invalid plans, failed or stopped clips, disconnects,
+and a 150-second progress timeout cancel without a verdict. Cleanup holds the
+failed episode until the link can remove its clips, avoiding stray footage on
+reconnect. Runtime episode/queue state is temporary; restart requires resubmission.
 
-The director answers in chat as **Arena** (system) and relays the
-coordinator's calls as **Narrator**. It also publishes `ShowState` to the web
-app every few seconds (and on every change), which is what the `/watch` page
-renders: program, fight card with health, queue, "ready · building".
-
-Queue policy is the upstream client's, ported: this process is the queue's
-only writer; fight clips insert ahead of waiting filler (`viewer_insert_position`)
-and evict it (`pop` on `generated: true` only) when they need room; a group is
-enqueued whole or not at all; autoplay is on and `run_playout` curates the
-playout front with `move` (`pick_next`); a full playout queue of filler that
-blocks a fight build is relieved one pop per tick.
+`#queue`, `#leave`, `#help`, and `#prompt <arena setting>` provide the other
+controls. One pending entry per browser identity; a paired entry is locked.
+Participants may queue another idea during their current episode. Old `!attack`
+commands explain that episodes now play automatically.
 
 ## Streaming ourselves: the HLS sink
 
@@ -100,6 +105,89 @@ process talks to Reactor directly through `reactor-sdk`.
 | `reactor_link.py`  | Everything that touches `reactor_sdk`: connect/reconnect, media → pacer, state mirror. |
 | `group_tag.py`     | The metadata tag and the shared queue policies (`pick_next`, `viewer_insert_position`). |
 | `pacer.py`         | Clip-shaped output → constant-rate stream; hands frames to the overlay.               |
-| `overlay/arena.py` | Fight status on every frame: round, health bars, the narrator's call, queue depth.    |
+| `overlay/arena.py` | Episode state and matchup on every frame; queue depth.    |
 | `sinks/hls.py`     | ffmpeg → HLS + the HTTP server. `rtmp.py` and `noop.py` as upstream.                  |
-| `tests/`           | `test_show.py`: a full idle → card → fight → verdict → idle cycle against fakes.       |
+| `tests/`           | `test_show.py`: pairing, buffering, chaining, completion and failure recovery against fakes.       |
+
+### Scene commentary and plan repair
+
+The episode planner writes a short narrator line for each shot, explaining the
+current tactic without revealing later events. The director posts it to Arena
+chat once per clip start, after `PLAYBACK_DELAY_S`, using the same delivery
+allowance as the verdict. This is approximate Twitch alignment, not per-viewer
+synchronization. Failed episodes discard pending commentary. A failed chat send
+is logged without retrying an ambiguous delivery or interrupting playback.
+
+Plans with schema validation errors get one focused LLM repair request carrying
+the original plan and validation errors. The repaired plan must pass the full
+schema and the 800-character shot limit; malformed plans still fail explicitly.
+
+### Spoken narration
+
+Set `FISH_API_KEY`, `FISH_REFERENCE_ID` (play-by-play), and
+`FISH_SECONDARY_REFERENCE_ID` (analyst) in the broadcaster's private env file.
+`FISH_MODEL` defaults to `s2-pro`. Without the key, narration remains chat-only.
+Odd scenes use play-by-play; even scenes use analysis. The same lines appear
+in chat after `PLAYBACK_DELAY_S`; that delay never applies to broadcast audio.
+
+`broadcaster/narration.py` prepares all announcer lines with at most two Fish requests
+in flight before enqueueing video. ffmpeg converts speech to 48 kHz mono int16,
+with pitch-preserving speed adjustment up to 1.5x when needed to fit the scene.
+A failed or oversized line cancels preparation before any footage is queued.
+The pacer mixes prepared speech on its existing audio clock, lowering H3 audio
+to 20% while speech plays and saturating the mix to prevent integer overflow.
+Clip-start events select speech once; cancellation and disconnect clear it. No network calls run in media callbacks. Timing follows clip events,
+so transport skew still needs a live listening check.
+
+
+### Episode staging and audio verification
+
+Episodes contain twelve scenes totaling 116 seconds before the model snaps
+lengths to its published bounds: A introduction (8s), A challenge (6s), B
+introduction (8s), B challenge (6s), face-off (8s), referee signal (6s), opening
+clash, counterplay, escalation, reversal and finishing move (12s each), then
+victory (14s). Entrances are solo; face-off establishes left/right positions
+and scale. A silver robot referee with an amber visor and striped vest recurs
+in face-off, start and victory. The final spoken commentary uses the explicit
+winner announcement; its image holds the celebration and visible loser.
+
+The planner emits three private `referenceFrames` briefs and per-shot
+`referenceRole` values for solo A, solo B and face-off. These are prompt briefs,
+not generated images. No reference-image field is sent to H3 until the new
+model's reference contract is verified. Current clips break the continuation
+chain at B's entrance and the face-off, then chain combat through victory.
+
+Only solo challenge scenes permit optional fighter dialogue (their own side,
+at most eight words/60 characters). The referee start line is deterministic.
+Fish skips those speaking scenes, keeping H3 speech at full volume; chat
+commentary remains. Entrance announcers use different voices. Silent shots
+request nonverbal sound and closed mouths; compliance needs listening tests.
+
+Normal clip completion lets queued speech drain; stops, cancellation and
+reconnects clear it. A new scene replaces old speech with a warning if any was
+unfinished. Audio logs distinguish source underflow, completely silent mixed
+output, transport drops, and the intentional announcer pauses. Silence metrics
+include idle time and cannot by themselves prove perceived audio quality.
+Each prepared line's duration and every fighter/referee line are logged for
+comparison during a listening test. User-reported dropouts remain unresolved
+until a fresh live test verifies the sound.
+
+The planner writes `challengeA` and `challengeB` separately; code assigns them
+to their solo challenge scenes. Decorative sound descriptions are bounded to
+50 characters at a word boundary before prompt assembly. Invalid story fields
+still require a successful validated repair.
+
+## Buffered VHS and hosting
+
+The optional `VHS_ENABLED=1` output adapter uses the Experiment 2 ntsc-rs preset
+in `broadcaster/presets/vhs.json`. Set `NTSC_RS_CLI` to the native executable;
+`VHS_PRESET` optionally overrides the preset. Eight-second segments are processed
+in worker threads and replayed with unchanged mixed audio at 480 lines. This
+adds startup delay; subsequent processing holds are logged. Buffers are bounded
+and overload stops the worker rather than silently discarding content. Normal
+shutdown discards the buffered tail, so finish a live test only after its delayed
+verdict has aired. The broadcaster adds measured VHS delay to chat/verdict timing.
+
+See `docs/HOSTING.md` at the repository root for the Twitch + single Render worker deployment. `render.yaml` and `broadcaster/Dockerfile` are the
+deployment entry points. `REQUIRE_SHARED_STORE=1` checks the authenticated
+`/api/broadcaster/status` endpoint before spending on a model session.

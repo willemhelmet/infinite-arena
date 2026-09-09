@@ -86,3 +86,8 @@ class ArenaApi:
         return await self._request(
             "POST", "/api/coordinator/program", json=payload, timeout=_LLM_TIMEOUT
         )
+
+    async def episode(self, payload: dict) -> dict:
+        return await self._request(
+            "POST", "/api/coordinator/episode", json=payload, timeout=_LLM_TIMEOUT
+        )
